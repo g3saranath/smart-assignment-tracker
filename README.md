@@ -1,4 +1,4 @@
-# 📚 Smart Assignment Tracker (TypeScript + React + Gemini)
+# Smart Assignment Tracker (TypeScript + React + Gemini)
 
 An **agentic** assignment assistant. A student uploads an assignment document and the app:
 
@@ -70,11 +70,11 @@ npm run dev
 
 ## Verified working
 
-- ✅ Both workspaces typecheck (`npm run typecheck`)
-- ✅ Client production build succeeds
-- ✅ Server boots; health, settings, list, and notify endpoints tested
-- ✅ Document ingestion + progress/timeline logic unit-tested
-- ✅ Vite dev proxy forwards `/api` to the backend
+- Both workspaces typecheck (`npm run typecheck`)
+- Client production build succeeds
+- Server boots; health, settings, list, and notify endpoints tested
+- Document ingestion + progress/timeline logic unit-tested
+- Vite dev proxy forwards `/api` to the backend
 
 > The question-extraction and solving features call Gemini, so they need a real
 > `GEMINI_API_KEY` in `.env`. Email reminders need SMTP credentials. Everything
@@ -82,7 +82,7 @@ npm run dev
 
 ---
 
-## 💡 Ideas for your student to extend it
+## Ideas to extend it
 
 - **Auto-detect due dates** from the document instead of typing them
 - **"What should I do tonight?"** — one endpoint that plans the evening from all pending work
