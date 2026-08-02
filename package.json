@@ -1,0 +1,21 @@
+{
+  "name": "smart-assignment-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Agentic assignment tracker: doc ingestion, web-search agent, timeline tracking, email notifications",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "install:all": "npm install && npm --workspace server install && npm --workspace client install",
+    "dev": "concurrently -n server,client -c blue,magenta \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "npm --workspace server run dev",
+    "dev:client": "npm --workspace client run dev",
+    "build": "npm --workspace server run build && npm --workspace client run build",
+    "typecheck": "npm --workspace server run typecheck && npm --workspace client run typecheck"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
