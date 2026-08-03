@@ -47,7 +47,7 @@ agent.ts    extractQuestions(markdown)
 parse JSON  ->  Question[]  (id, prompt, answer="", done=false)
       |
       v
-store.ts    save assignment to data.json
+store.ts    save assignment to SQLite (data.sqlite)
       |
       v
 respond with assignment + progress   ->   UI renders the question list
@@ -117,8 +117,11 @@ Scheduler (hourly, in notify.ts):
   it rather than failing, and the UI reports which path was used.
 - Resilience wraps every model call. `withRetry` handles transient 429s with backoff
   and fails fast with a clear message on hard `limit: 0` quota errors.
-- State is plain and inspectable. Everything persists to `server/data.json` through
-  `store.ts`, so the whole app state is one readable file.
+- State is stored in a real database. Everything persists to a local SQLite file
+  (`server/data.sqlite`) through `store.ts`, which uses better-sqlite3. Each assignment
+  is one row; its questions are kept as a JSON column. The store functions have simple
+  synchronous signatures, so the rest of the server does not need to know the storage
+  engine. An older `data.json`, if present, is imported once on startup.
 
 ## Where each piece lives
 
@@ -129,6 +132,6 @@ Scheduler (hourly, in notify.ts):
 | Agent: extract and solve | `server/src/agent.ts` |
 | Timeline and progress math | `server/src/progress.ts` |
 | Email reminders and scheduler | `server/src/notify.ts` |
-| JSON persistence | `server/src/store.ts` |
+| SQLite persistence | `server/src/store.ts` |
 | User interface | `client/src/App.tsx` |
 | Typed API client | `client/src/api.ts` |

@@ -69,7 +69,7 @@ export const api = {
     json<{ ok: boolean }>(fetch(`/api/assignments/${id}`, { method: "DELETE" })),
 
   solveQuestion: (id: string, qid: string) =>
-    json<{ question: Question; progress: Progress }>(
+    json<{ question: Question; progress: Progress; usedWebSearch: boolean }>(
       fetch(`/api/assignments/${id}/questions/${qid}/solve`, { method: "POST" })
     ),
 

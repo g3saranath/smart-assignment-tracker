@@ -11,9 +11,17 @@ function makeTransport() {
   const port = Number(process.env.SMTP_PORT || 587);
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
-  if (!host || !user || !pass) {
+  const missing = [
+    !host && "SMTP_HOST",
+    !user && "SMTP_USER",
+    !pass && "SMTP_PASS",
+  ].filter(Boolean);
+  if (missing.length) {
     throw new Error(
-      "SMTP is not configured. Set SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS in .env."
+      `Email is not configured. Missing in .env: ${missing.join(", ")}. ` +
+        `For Gmail, set SMTP_HOST=smtp.gmail.com, SMTP_PORT=587, SMTP_USER to your ` +
+        `Gmail address, SMTP_PASS to a Google App Password (not your normal password), ` +
+        `and SMTP_FROM to your Gmail address. Then restart the app.`
     );
   }
   return nodemailer.createTransport({
@@ -83,13 +91,24 @@ export async function sendReminderNow(): Promise<{ sent: boolean; count: number 
   }
   const { html, text, count } = buildSummaryHtml();
   const transport = makeTransport();
+  // Verify the SMTP connection and credentials up front so failures produce a
+  // clear error (for example, a wrong App Password) instead of a vague timeout.
+  try {
+    await transport.verify();
+  } catch (err) {
+    throw new Error(
+      `Could not connect to the email server. Check SMTP_HOST, SMTP_PORT, and your ` +
+        `credentials in .env. For Gmail, SMTP_PASS must be a Google App Password. ` +
+        `Details: ${(err as Error).message}`
+    );
+  }
   await transport.sendMail({
     from: process.env.SMTP_FROM || process.env.SMTP_USER,
     to: settings.studentEmail,
     subject:
       count === 0
-        ? "✅ All assignments complete!"
-        : `📚 ${count} pending assignment(s) — progress update`,
+        ? "All assignments complete"
+        : `${count} pending assignment(s): progress update`,
     text,
     html,
   });

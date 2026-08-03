@@ -130,11 +130,14 @@ app.post(
       res.status(404).json({ error: "Question not found" });
       return;
     }
-    const { answer, sources } = await solveQuestion(q.prompt, a.docMarkdown);
+    const { answer, sources, usedWebSearch } = await solveQuestion(
+      q.prompt,
+      a.docMarkdown
+    );
     q.answer = answer;
     q.sources = sources;
     saveAssignment(a);
-    res.json({ question: q, progress: computeProgress(a) });
+    res.json({ question: q, progress: computeProgress(a), usedWebSearch });
   })
 );
 

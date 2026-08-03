@@ -27,7 +27,7 @@ For a diagram of how the agent is designed and how data flows through it, see
 | Web search | Gemini Google Search grounding (no separate search key) |
 | Documents to markdown | `pdf-parse` (PDF), `mammoth` (DOCX), native (TXT/MD) |
 | Email | `nodemailer` (SMTP) |
-| Storage | Simple JSON file (`server/data.json`) |
+| Storage | SQLite database (`server/data.sqlite`) via better-sqlite3 |
 
 ---
 
@@ -148,7 +148,7 @@ http://localhost:4173
 
 - To stop the app, return to the terminal running `npm run dev` and press `Ctrl + C`.
 - To start it again later, run `npm run dev` from the project folder. Your data is
-  saved in `server/data.json` between runs.
+  saved in `server/data.sqlite` between runs.
 
 ---
 
@@ -363,7 +363,7 @@ server/               Express backend and agent
   src/ingest.ts       Document to markdown
   src/progress.ts     Timeline and completion math
   src/notify.ts       Email reminders and scheduler
-  src/store.ts        JSON persistence
+  src/store.ts        SQLite persistence (better-sqlite3)
 client/               React + Vite user interface
   src/App.tsx
   src/api.ts

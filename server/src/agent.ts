@@ -8,9 +8,10 @@ import { GoogleGenAI } from "@google/genai";
 import type { Question } from "./types.js";
 
 // Model is configurable via .env so you can switch tiers/models without code
-// changes (e.g. GEMINI_MODEL=gemini-2.5-flash or gemini-1.5-flash).
-const MODEL = process.env.GEMINI_MODEL || "gemini-2.0-flash";
-const MAX_RETRIES = Number(process.env.GEMINI_MAX_RETRIES || 3);
+// changes (e.g. GEMINI_MODEL=gemini-flash-latest). These are read at call time
+// (not import time) because ES module imports run before dotenv loads .env.
+const model = () => process.env.GEMINI_MODEL || "gemini-flash-latest";
+const maxRetries = () => Number(process.env.GEMINI_MAX_RETRIES || 3);
 
 function client(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -48,8 +49,9 @@ function isZeroQuota(err: unknown): boolean {
  * quota fails fast with a clear, actionable message instead of looping.
  */
 async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
+  const retries = maxRetries();
   let lastErr: unknown;
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       return await fn();
     } catch (err) {
@@ -58,7 +60,7 @@ async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
 
       if (isZeroQuota(err)) {
         throw new Error(
-          `Gemini quota is 0 for model "${MODEL}" on this API key — retrying won't help. ` +
+          `Gemini quota is 0 for model "${model()}" on this API key — retrying won't help. ` +
             `This usually means the key's project has no free-tier access. Fix: create a NEW ` +
             `key via "Create API key in a new project" at https://aistudio.google.com/apikey, ` +
             `or set GEMINI_MODEL to a model your project can access, or enable billing. ` +
@@ -66,12 +68,12 @@ async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
         );
       }
 
-      if (attempt === MAX_RETRIES) break;
+      if (attempt === retries) break;
       // Respect the server's suggested delay; otherwise exponential backoff.
       const suggested = retryDelaySeconds(err);
       const waitMs = suggested != null ? suggested * 1000 + 500 : 2 ** attempt * 1000;
       console.warn(
-        `[gemini] rate-limited while ${label}; retry ${attempt + 1}/${MAX_RETRIES} in ${Math.round(waitMs / 1000)}s`
+        `[gemini] rate-limited while ${label}; retry ${attempt + 1}/${retries} in ${Math.round(waitMs / 1000)}s`
       );
       await sleep(waitMs);
     }
@@ -105,7 +107,7 @@ ${docMarkdown.slice(0, 30000)}
   const res = await withRetry(
     () =>
       ai.models.generateContent({
-        model: MODEL,
+        model: model(),
         contents: prompt,
       }),
     "extracting questions"
@@ -123,9 +125,10 @@ ${docMarkdown.slice(0, 30000)}
 export interface SolveResult {
   answer: string;
   sources: string[];
+  usedWebSearch: boolean;
 }
 
-/** Solve one question using the doc as context + Google Search grounding. */
+/** Solve one question using the doc as context, with optional web search. */
 export async function solveQuestion(
   question: string,
   docMarkdown: string
@@ -135,7 +138,7 @@ export async function solveQuestion(
   const prompt = `You are a study assistant helping a student understand and solve an assignment question.
 Use the assignment document below as primary context. When helpful, use web search
 to find accurate, up-to-date supporting information. Explain the answer clearly so the
-student learns — show reasoning/steps, not just a final answer.
+student learns. Show reasoning and steps, not just a final answer.
 
 Assignment document (context):
 """
@@ -145,22 +148,47 @@ ${docMarkdown.slice(0, 20000)}
 Question to solve:
 ${question}`;
 
-  const res = await withRetry(
-    () =>
-      ai.models.generateContent({
-        model: MODEL,
-        contents: prompt,
-        config: {
-          // Enable Google Search grounding so the agent can web-search.
-          tools: [{ googleSearch: {} }],
-        },
-      }),
-    "solving question"
-  );
+  // Preferred path: answer with Google Search grounding enabled.
+  try {
+    const res = await withRetry(
+      () =>
+        ai.models.generateContent({
+          model: model(),
+          contents: prompt,
+          config: {
+            // Enable Google Search grounding so the agent can web-search.
+            tools: [{ googleSearch: {} }],
+          },
+        }),
+      "solving question with web search"
+    );
+    return readSolveResult(res, true);
+  } catch (err) {
+    // The web-search tool has a much lower free-tier quota than plain calls.
+    // If it is rate-limited, fall back to answering without web search so the
+    // student still gets a document-grounded answer instead of an error.
+    if (!isRateLimit(err)) throw err;
+    console.warn(
+      "[gemini] web search rate-limited; retrying without web search"
+    );
+    const res = await withRetry(
+      () =>
+        ai.models.generateContent({
+          model: model(),
+          contents: prompt,
+        }),
+      "solving question without web search"
+    );
+    return readSolveResult(res, false);
+  }
+}
 
+/** Extract the answer text and any grounding source URLs from a response. */
+function readSolveResult(
+  res: Awaited<ReturnType<GoogleGenAI["models"]["generateContent"]>>,
+  usedWebSearch: boolean
+): SolveResult {
   const answer = (res.text ?? "").trim();
-
-  // Pull source URLs out of grounding metadata when present.
   const sources = new Set<string>();
   const candidates = res.candidates ?? [];
   for (const c of candidates) {
@@ -170,8 +198,7 @@ ${question}`;
       if (uri) sources.add(uri);
     }
   }
-
-  return { answer, sources: [...sources] };
+  return { answer, sources: [...sources], usedWebSearch };
 }
 
 /** Build a fresh Question object from a prompt string. */
