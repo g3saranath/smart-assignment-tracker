@@ -12,6 +12,9 @@ An agentic assignment assistant. A student uploads an assignment document and th
 
 Cross-platform (Mac and Windows). No paid APIs are required; Gemini has a free tier.
 
+For a diagram of how the agent is designed and how data flows through it, see
+[ARCHITECTURE.md](ARCHITECTURE.md).
+
 ---
 
 ## Tech stack
@@ -119,13 +122,13 @@ npm run dev
 ```
 
 You should see messages saying the server is running on port 3001 and Vite is ready
-on port 5173. Leave this terminal window open; it must stay running while you use the
+on port 4173. Leave this terminal window open; it must stay running while you use the
 app.
 
 Open your web browser and go to:
 
 ```
-http://localhost:5173
+http://localhost:4173
 ```
 
 ### Step 7: Try it end to end
@@ -149,25 +152,127 @@ http://localhost:5173
 
 ---
 
+## Examples
+
+### A sample document to try
+
+The repository includes a ready-to-use file at
+[`examples/sample-assignment.md`](examples/sample-assignment.md). Upload it in Step 7 to
+see the full flow without preparing your own document. It contains five physics
+questions, including ones that produce formulas and math in the answers.
+
+### What the agent extracts
+
+After uploading the sample, the agent reads the document and produces a checklist of the
+individual questions, for example:
+
+```
+Q1  State Newton's second law of motion and write its equation.
+Q2  A 2 kg block is pushed with a net force of 10 N across a frictionless
+    surface. What is its acceleration?
+Q3  Explain the difference between speed and velocity in one or two sentences.
+Q4  A car accelerates uniformly from rest to 20 m/s in 5 seconds. Calculate
+    its acceleration and the distance travelled during this time.
+Q5  Briefly describe what kinetic energy is and give its formula.
+```
+
+Each question gets its own card with a checkbox and a "Solve with agent" button.
+
+### What a solved answer looks like
+
+When you click "Solve with agent", the answer is rendered as formatted text, not raw
+markdown. Headings, bold, lists, and math all display properly. For question 2 above, the
+agent produces something like:
+
+> **Answer**
+>
+> Using Newton's second law, `F = m * a`, so `a = F / m`.
+>
+> Substituting the values: `a = 10 N / 2 kg = 5 m/s^2`.
+>
+> The block accelerates at **5 meters per second squared** in the direction of the force.
+
+Mathematical expressions written in LaTeX (for example an equation like the kinetic
+energy formula) are rendered with proper notation rather than shown as plain characters.
+
+### Sources and web search
+
+If the web-search tool was available for that request, a "Sources" list appears under the
+answer with links the agent consulted. On the free tier the search tool is often
+rate-limited; when that happens the app still answers from the document and its own
+knowledge, and the status message notes that web search was skipped. See the
+Troubleshooting section for details.
+
+---
+
 ## Optional: email reminders
 
 Reminder emails are off until you configure an email account to send from. Gmail is the
-easiest.
+easiest. Gmail does not let apps sign in with your normal password, so you create a
+special 16-character "App Password" just for this app.
 
-1. Turn on 2-Step Verification for your Google account.
-2. Create an "App Password": Google Account > Security > App passwords. Google gives you
-   a 16-character password. This is not your normal Gmail password.
-3. In your `.env` file, fill in:
-   ```
-   SMTP_HOST=smtp.gmail.com
-   SMTP_PORT=587
-   SMTP_USER=you@gmail.com
-   SMTP_PASS=your_16_character_app_password
-   SMTP_FROM=you@gmail.com
-   ```
-4. Restart the app (`Ctrl + C`, then `npm run dev`).
-5. In the app, open the Notifications section, enter the student email, enable
-   reminders, and use "Send test reminder now" to confirm it works.
+### Step A: Create a Gmail App Password
+
+1. Sign in to the Gmail account you want to send from.
+2. Turn on 2-Step Verification. Go to https://myaccount.google.com/security, find
+   "2-Step Verification", and follow the prompts. App Passwords do not exist until
+   2-Step Verification is on.
+3. Open the App Passwords page: https://myaccount.google.com/apppasswords
+   (If the page says it is not available, make sure Step 2 is complete and that you are
+   using a personal Gmail account. Some school or work accounts disable this feature.)
+4. Type a name to remember it by, for example "Assignment Tracker", and click Create.
+5. Google shows a 16-character password, displayed in four groups like
+   `abcd efgh ijkl mnop`. Copy it now, because Google will not show it again.
+6. You can remove the spaces when you paste it. `abcd efgh ijkl mnop` and
+   `abcdefghijklmnop` both work.
+
+Keep this password private. It only allows sending email from this one account, and you
+can delete it anytime from the same App Passwords page.
+
+### Step B: Put the credentials in your .env file
+
+In your `.env` file, fill in:
+```
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=you@gmail.com
+SMTP_PASS=your_16_character_app_password
+SMTP_FROM=you@gmail.com
+```
+`SMTP_USER` and `SMTP_FROM` are your Gmail address. `SMTP_PASS` is the App Password from
+Step A, not your normal Gmail password.
+
+### Step C: Restart and test
+
+1. Restart the app (`Ctrl + C`, then `npm run dev`).
+2. In the app, open the Notifications section, enter the student email, enable reminders,
+   and click "Send test reminder now".
+3. Check the inbox (and the Spam folder the first time) for the reminder email.
+
+If sending fails, the app will tell you what is wrong, for example a missing field or a
+rejected password. The most common cause is using the normal Gmail password instead of
+the App Password from Step A.
+
+### When are reminder emails sent?
+
+There are two ways an email goes out:
+
+- Manual: the "Send test reminder now" button sends immediately, every time you click it,
+  regardless of timing. This is the easiest way to confirm setup works.
+- Automatic: while the app is running, a background scheduler checks the assignments once
+  every hour and sends a reminder when all of these are true:
+  - Reminders are enabled and a student email is set in the Notifications section.
+  - There is at least one pending assignment (an assignment that is not fully complete).
+  - At least 12 hours have passed since the last reminder was sent, so the student is not
+    emailed more than about twice a day.
+
+Notes:
+- The scheduler only runs while `npm run dev` (or the built server) is running. If the app
+  is closed, no automatic emails are sent until it is started again.
+- The email contains a summary of every pending assignment, including how many questions
+  are completed versus remaining and how close each due date is.
+- Timing values live in `server/src/notify.ts` (`startScheduler`): the hourly check and
+  the 12-hour minimum gap can be adjusted there if you want reminders more or less often.
 
 ---
 
@@ -177,13 +282,29 @@ easiest.
 opened before installing it. Install Node, then close and reopen the terminal.
 
 **Port already in use.** Another program (or an old copy of this app) is using port
-5173 or 3001. Close the other program, or stop the previous run with `Ctrl + C`.
+4173 or 3001. Close the other program, or stop the previous run with `Ctrl + C`.
 
-**429 error with "limit: 0" when solving a question.** Your Gemini key's project has no
-free-tier quota. Create a new key using "Create API key in a new project" at
-https://aistudio.google.com/apikey. You can also set `GEMINI_MODEL` in `.env` to a
-different model (for example `gemini-2.5-flash` or `gemini-1.5-flash`). The app already
+**429 error with "limit: 0" when solving or extracting.** Your Gemini key's project
+has no free-tier quota for the requested model. Create a new key using "Create API key
+in a new project" at https://aistudio.google.com/apikey, and set `GEMINI_MODEL` in
+`.env` to a model your key can access. Newer keys generally have access to
+`gemini-flash-latest`, which is the default. Older model names such as
+`gemini-2.0-flash` or `gemini-2.5-flash` may be blocked for new keys. The app already
 retries automatically for ordinary rate limits.
+
+**429 error only when using "Solve with agent" (web search).** The "Solve" feature uses
+Gemini's Google Search grounding (web search) tool. On the free tier this specific tool
+has a much lower quota than plain text calls, so extracting questions can succeed while
+solving fails with a 429. This is a Google-side limit, not a bug in the app. Options:
+- Space out solve attempts (roughly one per minute) so the free-tier per-minute quota
+  can recover. Results will be intermittent.
+- Enable billing on the key's Google Cloud project to remove the throttle. Google Search
+  grounding is free up to a monthly cap and then very low cost, so for a student project
+  the bill is typically zero or a few cents.
+- If you prefer no web search at all, remove the `tools: [{ googleSearch: {} }]` line in
+  `server/src/agent.ts` (function `solveQuestion`). The agent will then answer from the
+  uploaded document and its own knowledge, with no source links and no grounding quota
+  limit.
 
 **"GEMINI_API_KEY is not set."** The `.env` file is missing, or the key line still says
 `your_key_here`. Recheck Step 5 and restart the app.
@@ -192,7 +313,7 @@ retries automatically for ordinary rate limits.
 all four SMTP values are filled in. Restart the app after editing `.env`.
 
 **Nothing happens when I upload.** Make sure the `npm run dev` terminal is still
-running and that you opened http://localhost:5173 (not 3001) in the browser.
+running and that you opened http://localhost:4173 (not 3001) in the browser.
 
 ---
 
@@ -207,6 +328,16 @@ running and that you opened http://localhost:5173 (not 3001) in the browser.
 | Email reminders | `server/src/notify.ts` | A scheduler that emails pending-assignment summaries |
 | API | `server/src/index.ts` | REST endpoints wiring it together |
 | User interface | `client/src/App.tsx` | Upload, progress bars, per-question solve and sources |
+
+### About web search
+
+"Solve with agent" uses Gemini's built-in Google Search grounding rather than a
+separate search API. The call in `solveQuestion` passes `tools: [{ googleSearch: {} }]`,
+and Gemini decides on its own whether to search, runs the searches server-side, and
+folds the results into the answer. The code then reads the source URLs from
+`groundingMetadata` and shows them under "Sources". Note that this grounded tool has a
+much lower free-tier quota than plain text calls; see the Troubleshooting section if
+solving returns a 429.
 
 ---
 
