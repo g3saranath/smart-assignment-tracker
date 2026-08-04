@@ -19,7 +19,7 @@ For a diagram of how the agent is designed and how data flows through it, see
 
 ## Tech stack
 
-| Layer | Technology |
+| Layer | Technologies |
 |-------|------------|
 | Frontend | React 18 + TypeScript + Vite |
 | Backend | Node + Express + TypeScript |
