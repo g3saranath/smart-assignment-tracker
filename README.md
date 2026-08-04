@@ -11,7 +11,7 @@ An agentic assignment assistant. A student uploads an assignment document and th
 5. Emails reminders for pending assignments, including a progress summary.
 
 Cross-platform (Mac and Windows). No paid APIs are required; Gemini has a free tier.
-
+I love this project
 For a diagram of how the agent is designed and how data flows through it, see
 [ARCHITECTURE.md](ARCHITECTURE.md).
 
