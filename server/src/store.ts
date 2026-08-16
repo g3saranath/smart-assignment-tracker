@@ -13,7 +13,13 @@ import Database from "better-sqlite3";
 import { existsSync, readFileSync, renameSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import type { Assignment, DB, Question, Settings } from "./types.js";
+import type {
+  Assignment,
+  AssignmentImage,
+  DB,
+  Question,
+  Settings,
+} from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_FILE = join(__dirname, "..", "data.sqlite");
@@ -47,6 +53,15 @@ db.exec(`
   );
 `);
 
+// Migration: add the `images` column to existing databases (JSON array of
+// AssignmentImage). New DBs get it here too; the default keeps old rows valid.
+const assignmentCols = db
+  .prepare("PRAGMA table_info(assignments)")
+  .all() as { name: string }[];
+if (!assignmentCols.some((c) => c.name === "images")) {
+  db.exec("ALTER TABLE assignments ADD COLUMN images TEXT NOT NULL DEFAULT '[]'");
+}
+
 // Ensure exactly one settings row exists.
 db.prepare(
   `INSERT OR IGNORE INTO settings (id, studentEmail, notifyEnabled, lastNotifiedAt)
@@ -62,6 +77,7 @@ interface AssignmentRow {
   dueDate: string;
   docMarkdown: string;
   questions: string;
+  images: string;
   createdAt: string;
 }
 
@@ -72,12 +88,19 @@ function rowToAssignment(row: AssignmentRow): Assignment {
   } catch {
     questions = [];
   }
+  let images: AssignmentImage[] = [];
+  try {
+    images = JSON.parse(row.images ?? "[]") as AssignmentImage[];
+  } catch {
+    images = [];
+  }
   return {
     id: row.id,
     title: row.title,
     course: row.course,
     dueDate: row.dueDate,
     docMarkdown: row.docMarkdown,
+    images,
     questions,
     createdAt: row.createdAt,
   };
@@ -101,6 +124,7 @@ function migrateLegacyJson(): void {
           dueDate: a.dueDate,
           docMarkdown: a.docMarkdown,
           questions: JSON.stringify(a.questions ?? []),
+          images: JSON.stringify(a.images ?? []),
           createdAt: a.createdAt,
         });
       }
@@ -120,14 +144,15 @@ function migrateLegacyJson(): void {
 // ---- Prepared statements ---------------------------------------------------
 
 const insertAssignmentStmt = db.prepare(
-  `INSERT INTO assignments (id, title, course, dueDate, docMarkdown, questions, createdAt)
-   VALUES (@id, @title, @course, @dueDate, @docMarkdown, @questions, @createdAt)
+  `INSERT INTO assignments (id, title, course, dueDate, docMarkdown, questions, images, createdAt)
+   VALUES (@id, @title, @course, @dueDate, @docMarkdown, @questions, @images, @createdAt)
    ON CONFLICT(id) DO UPDATE SET
      title = excluded.title,
      course = excluded.course,
      dueDate = excluded.dueDate,
      docMarkdown = excluded.docMarkdown,
      questions = excluded.questions,
+     images = excluded.images,
      createdAt = excluded.createdAt`
 );
 
@@ -155,6 +180,7 @@ export function saveAssignment(assignment: Assignment): void {
     dueDate: assignment.dueDate,
     docMarkdown: assignment.docMarkdown,
     questions: JSON.stringify(assignment.questions ?? []),
+    images: JSON.stringify(assignment.images ?? []),
     createdAt: assignment.createdAt,
   });
 }

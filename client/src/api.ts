@@ -17,12 +17,21 @@ export interface Progress {
   status: "overdue" | "due-today" | "due-soon" | "on-track" | "no-date" | "done";
 }
 
+export interface AssignmentImage {
+  id: string;
+  file: string; // relative path; fetch at /api/assets/<file>
+  mimeType: string;
+  caption: string;
+  page: number;
+}
+
 export interface Assignment {
   id: string;
   title: string;
   course: string;
   dueDate: string;
   docMarkdown: string;
+  images: AssignmentImage[];
   questions: Question[];
   createdAt: string;
 }

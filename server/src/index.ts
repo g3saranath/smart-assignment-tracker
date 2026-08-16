@@ -1,12 +1,13 @@
 // Express API. Endpoints:
-//   POST   /api/assignments            (multipart: doc file + title/course/dueDate) -> ingest + extract questions
+//   POST   /api/assignments            (multipart: doc file + title/course/dueDate) -> ingest (MinerU OCR for PDF/images) + extract questions
 //   GET    /api/assignments            -> list with progress
 //   GET    /api/assignments/:id        -> one assignment (full, with questions)
 //   DELETE /api/assignments/:id
-//   POST   /api/assignments/:id/questions/:qid/solve  -> agent solves via doc + web search
+//   POST   /api/assignments/:id/questions/:qid/solve  -> agent solves via doc text + figures + web search
 //   PATCH  /api/assignments/:id/questions/:qid        -> update answer/done
 //   GET    /api/settings   PUT /api/settings
 //   POST   /api/notify/test -> send reminder email now
+//   GET    /api/assets/*    -> static extracted figures
 
 import { config as loadEnv } from "dotenv";
 import { fileURLToPath } from "node:url";
@@ -31,12 +32,19 @@ import { ingestDocument } from "./ingest.js";
 import { extractQuestions, solveQuestion, newQuestion } from "./agent.js";
 import { computeProgress } from "./progress.js";
 import { sendReminderNow, startScheduler } from "./notify.js";
+import {
+  ASSETS_DIR,
+  deleteAssignmentAssets,
+  saveAssignmentImages,
+} from "./assets.js";
 import type { Assignment } from "./types.js";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 15 * 1024 * 1024 } });
+// Serve extracted document figures read-only (for the UI / exported PDF).
+app.use("/api/assets", express.static(ASSETS_DIR));
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 const wrap =
   (fn: (req: express.Request, res: express.Response) => Promise<void>) =>
@@ -59,18 +67,29 @@ app.post(
       res.status(400).json({ error: "No document uploaded." });
       return;
     }
-    const { markdown } = await ingestDocument(
+    const id = randomUUID();
+    const { markdown, images } = await ingestDocument(
       req.file.buffer,
       req.file.originalname,
       req.file.mimetype
     );
-    const prompts = await extractQuestions(markdown);
+    // Persist extracted figures to disk, then feed both text + figures to the agent.
+    const savedImages = saveAssignmentImages(id, images);
+    let prompts: string[];
+    try {
+      prompts = await extractQuestions(markdown, savedImages);
+    } catch (err) {
+      // Extraction failed after images were written — don't leak the files.
+      deleteAssignmentAssets(id);
+      throw err;
+    }
     const assignment: Assignment = {
-      id: randomUUID(),
+      id,
       title: title?.trim() || req.file.originalname,
       course: course?.trim() || "General",
       dueDate: dueDate?.trim() || "",
       docMarkdown: markdown,
+      images: savedImages,
       questions: prompts.map((p) => newQuestion(randomUUID(), p)),
       createdAt: new Date().toISOString(),
     };
@@ -112,6 +131,7 @@ app.delete(
   "/api/assignments/:id",
   wrap(async (req, res) => {
     deleteAssignment(req.params.id);
+    deleteAssignmentAssets(req.params.id);
     res.json({ ok: true });
   })
 );
@@ -132,7 +152,8 @@ app.post(
     }
     const { answer, sources, usedWebSearch } = await solveQuestion(
       q.prompt,
-      a.docMarkdown
+      a.docMarkdown,
+      a.images
     );
     q.answer = answer;
     q.sources = sources;

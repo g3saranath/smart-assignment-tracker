@@ -262,11 +262,11 @@ export default function App() {
                 <input name="dueDate" type="date" />
               </label>
               <label className="field">
-                <span className="field-label">Document (PDF, DOCX, TXT, MD)</span>
+                <span className="field-label">Document (PDF, image, DOCX, TXT, MD)</span>
                 <input
                   name="document"
                   type="file"
-                  accept=".pdf,.docx,.txt,.md"
+                  accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp"
                   className="file-input"
                   required
                 />
@@ -418,6 +418,35 @@ export default function App() {
               </div>
 
               <ProgressBar p={selectedProgress} />
+
+              {selected.images.length > 0 && (
+                <>
+                  <h3 className="section-title">
+                    Figures ({selected.images.length})
+                  </h3>
+                  <div className="figure-strip">
+                    {selected.images.map((img) => (
+                      <a
+                        key={img.id}
+                        className="figure-thumb"
+                        href={`/api/assets/${img.file}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        title={
+                          img.caption ||
+                          (img.page >= 0 ? `Page ${img.page + 1}` : "Figure")
+                        }
+                      >
+                        <img
+                          src={`/api/assets/${img.file}`}
+                          alt={img.caption || "Figure"}
+                          loading="lazy"
+                        />
+                      </a>
+                    ))}
+                  </div>
+                </>
+              )}
 
               <h3 className="section-title">
                 Questions ({selectedProgress.completed}/{selectedProgress.total} completed)

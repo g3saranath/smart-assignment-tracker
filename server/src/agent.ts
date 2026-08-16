@@ -5,13 +5,21 @@
 //      PLUS live Google Search grounding, returning the answer + source URLs.
 
 import { GoogleGenAI } from "@google/genai";
-import type { Question } from "./types.js";
+import type { Content, Part } from "@google/genai";
+import type { AssignmentImage, Question } from "./types.js";
+import { readImageBytes } from "./assets.js";
 
 // Model is configurable via .env so you can switch tiers/models without code
 // changes (e.g. GEMINI_MODEL=gemini-flash-latest). These are read at call time
 // (not import time) because ES module imports run before dotenv loads .env.
 const model = () => process.env.GEMINI_MODEL || "gemini-flash-latest";
 const maxRetries = () => Number(process.env.GEMINI_MAX_RETRIES || 3);
+// How many document figures to attach to a single Gemini call, the per-image
+// byte ceiling, and the cumulative byte budget across all attached figures.
+// Keeps token cost and payload size bounded on figure-heavy docs.
+const maxImages = () => Number(process.env.GEMINI_MAX_IMAGES || 6);
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_TOTAL_IMAGE_BYTES = 16 * 1024 * 1024;
 
 function client(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -38,6 +46,12 @@ function isRateLimit(err: unknown): boolean {
   return msg.includes("429") || /RESOURCE_EXHAUSTED|Too Many Requests/i.test(msg);
 }
 
+/** Transient server-side unavailability (503) that is usually worth retrying. */
+function isOverloaded(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes("503") || /UNAVAILABLE|overloaded|high demand/i.test(msg);
+}
+
 /** True when the quota is a hard zero — retrying will never help. */
 function isZeroQuota(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
@@ -56,7 +70,7 @@ async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
       return await fn();
     } catch (err) {
       lastErr = err;
-      if (!isRateLimit(err)) throw err;
+      if (!isRateLimit(err) && !isOverloaded(err)) throw err;
 
       if (isZeroQuota(err)) {
         throw new Error(
@@ -73,7 +87,7 @@ async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
       const suggested = retryDelaySeconds(err);
       const waitMs = suggested != null ? suggested * 1000 + 500 : 2 ** attempt * 1000;
       console.warn(
-        `[gemini] rate-limited while ${label}; retry ${attempt + 1}/${retries} in ${Math.round(waitMs / 1000)}s`
+        `[gemini] ${isOverloaded(err) ? "overloaded" : "rate-limited"} while ${label}; retry ${attempt + 1}/${retries} in ${Math.round(waitMs / 1000)}s`
       );
       await sleep(waitMs);
     }
@@ -89,13 +103,57 @@ function stripFences(text: string): string {
   return t;
 }
 
+/**
+ * Build a multimodal `contents` payload: the text prompt, a short manifest of
+ * the attached figures (so the model can correlate them), then the figure
+ * images themselves as inline data parts, in the same order as the manifest.
+ */
+async function buildContents(
+  prompt: string,
+  images: AssignmentImage[]
+): Promise<Content[]> {
+  const attached: Part[] = [];
+  let manifest = "";
+  let n = 0;
+  let totalBytes = 0;
+
+  for (const img of images.slice(0, maxImages())) {
+    let bytes: Buffer;
+    try {
+      bytes = await readImageBytes(img.file);
+    } catch {
+      continue; // asset missing on disk, skip rather than fail the call
+    }
+    if (bytes.length === 0 || bytes.length > MAX_IMAGE_BYTES) continue;
+    if (totalBytes + bytes.length > MAX_TOTAL_IMAGE_BYTES) break; // budget hit
+    totalBytes += bytes.length;
+    n += 1;
+    const where = img.page >= 0 ? ` (page ${img.page + 1})` : "";
+    const cap = img.caption ? `: ${img.caption}` : "";
+    manifest += `\n- Figure ${n}${where}${cap}`;
+    attached.push({
+      inlineData: { mimeType: img.mimeType, data: bytes.toString("base64") },
+    });
+  }
+
+  const text = attached.length
+    ? `${prompt}\n\n${attached.length} figure(s) from the document are attached below, in order:${manifest}`
+    : prompt;
+
+  return [{ role: "user", parts: [{ text }, ...attached] }];
+}
+
 /** Read the document and extract a list of question prompts. */
-export async function extractQuestions(docMarkdown: string): Promise<string[]> {
+export async function extractQuestions(
+  docMarkdown: string,
+  images: AssignmentImage[] = []
+): Promise<string[]> {
   const ai = client();
   const prompt = `You are helping a student break an assignment into its individual questions.
 
 Below is the assignment document (in markdown). Extract every distinct question,
 problem, or task the student is asked to complete. Keep each question's full text.
+If figures are attached, include any questions shown only inside those images.
 
 Return ONLY a JSON array of strings, one per question. No markdown fences, no commentary.
 
@@ -104,11 +162,12 @@ Assignment document:
 ${docMarkdown.slice(0, 30000)}
 """`;
 
+  const contents = await buildContents(prompt, images);
   const res = await withRetry(
     () =>
       ai.models.generateContent({
         model: model(),
-        contents: prompt,
+        contents: contents,
       }),
     "extracting questions"
   );
@@ -131,14 +190,17 @@ export interface SolveResult {
 /** Solve one question using the doc as context, with optional web search. */
 export async function solveQuestion(
   question: string,
-  docMarkdown: string
+  docMarkdown: string,
+  images: AssignmentImage[] = []
 ): Promise<SolveResult> {
   const ai = client();
 
   const prompt = `You are a study assistant helping a student understand and solve an assignment question.
-Use the assignment document below as primary context. When helpful, use web search
-to find accurate, up-to-date supporting information. Explain the answer clearly so the
-student learns. Show reasoning and steps, not just a final answer.
+Use the assignment document below as primary context. If figures from the document
+are attached as images, read them as part of the context — they may contain the
+diagram, chart, or data the question refers to. When helpful, use web search to find
+accurate, up-to-date supporting information. Explain the answer clearly so the student
+learns. Show reasoning and steps, not just a final answer.
 
 Assignment document (context):
 """
@@ -148,13 +210,15 @@ ${docMarkdown.slice(0, 20000)}
 Question to solve:
 ${question}`;
 
+  const contents = await buildContents(prompt, images);
+
   // Preferred path: answer with Google Search grounding enabled.
   try {
     const res = await withRetry(
       () =>
         ai.models.generateContent({
           model: model(),
-          contents: prompt,
+          contents,
           config: {
             // Enable Google Search grounding so the agent can web-search.
             tools: [{ googleSearch: {} }],
@@ -175,7 +239,7 @@ ${question}`;
       () =>
         ai.models.generateContent({
           model: model(),
-          contents: prompt,
+          contents,
         }),
       "solving question without web search"
     );
