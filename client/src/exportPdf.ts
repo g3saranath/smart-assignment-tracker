@@ -3,7 +3,7 @@
 // non-Latin-1 characters (emoji, CJK, most math symbols) are stripped.
 
 import { jsPDF } from "jspdf";
-import { api, type Assignment, type Progress } from "./api.js";
+import { api } from "./api.js";
 
 const PAGE_W = 210;
 const PAGE_H = 297;
@@ -17,10 +17,12 @@ function clean(text: string): string {
 
 export async function exportAllToPdf(): Promise<number> {
   const { assignments: summaries } = await api.listAssignments();
-  const items: { assignment: Assignment; progress: Progress }[] = [];
-  for (const s of summaries) {
-    items.push(await api.getAssignment(s.id));
-  }
+  const items = await Promise.all(
+    summaries.map((s) => api.getAssignment(s.id))
+  );
+
+  // Nothing to export — bail out before creating/saving an empty PDF.
+  if (items.length === 0) return 0;
 
   const doc = new jsPDF({ unit: "mm", format: "a4" });
   let y = MARGIN;
@@ -31,6 +33,16 @@ export async function exportAllToPdf(): Promise<number> {
       return MARGIN;
     }
     return y;
+  };
+
+  // Draws pre-wrapped lines one at a time, breaking pages between lines so a
+  // block taller than a page can't overflow off the bottom.
+  const writeLines = (lines: string[], x: number, lineH: number): void => {
+    for (const line of lines) {
+      y = newPageIfNeeded(lineH);
+      doc.text(line, x, y);
+      y += lineH;
+    }
   };
 
   doc.setFont("helvetica", "bold");
@@ -47,9 +59,7 @@ export async function exportAllToPdf(): Promise<number> {
   const totalQ = items.reduce((n, i) => n + i.progress.total, 0);
   const doneQ = items.reduce((n, i) => n + i.progress.completed, 0);
   doc.text(
-    items.length === 0
-      ? "No assignments yet."
-      : `${items.length} assignment(s) · ${doneQ}/${totalQ} questions completed`,
+    `${items.length} assignment(s) · ${doneQ}/${totalQ} questions completed`,
     MARGIN,
     y
   );
@@ -86,17 +96,15 @@ export async function exportAllToPdf(): Promise<number> {
     for (const q of a.questions) {
       const mark = q.done ? "[done] " : "";
       const prompt = doc.splitTextToSize(clean(`${mark}${q.prompt}`), CONTENT_W);
-      y = newPageIfNeeded(prompt.length * 5 + 4);
-      doc.text(prompt, MARGIN, y);
-      y += prompt.length * 5 + 1.5;
+      writeLines(prompt, MARGIN, 5);
+      y += 1.5;
 
       if (q.answer) {
         doc.setFont("helvetica", "normal");
         doc.setFontSize(9);
         const answer = doc.splitTextToSize(clean(q.answer), CONTENT_W - 6);
-        y = newPageIfNeeded(answer.length * 4 + 3);
-        doc.text(answer, MARGIN + 6, y);
-        y += answer.length * 4 + 1;
+        writeLines(answer, MARGIN + 6, 4);
+        y += 1;
 
         if (q.sources.length > 0) {
           doc.setFontSize(8);
@@ -105,9 +113,8 @@ export async function exportAllToPdf(): Promise<number> {
             "Sources: " + q.sources.join("  |  "),
             CONTENT_W - 6
           );
-          y = newPageIfNeeded(sources.length * 3.5 + 2);
-          doc.text(sources, MARGIN + 6, y);
-          y += sources.length * 3.5 + 1;
+          writeLines(sources, MARGIN + 6, 3.5);
+          y += 1;
           doc.setTextColor(0);
         }
       }

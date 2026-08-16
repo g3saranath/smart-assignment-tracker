@@ -7,7 +7,6 @@ import {
   type Progress,
   type Settings,
 } from "./api.js";
-import { exportAllToPdf } from "./exportPdf.js";
 
 type Theme = "light" | "dark";
 
@@ -182,6 +181,8 @@ export default function App() {
     setExporting(true);
     setMsg("Preparing PDF…");
     try {
+      // Loaded on demand so jsPDF stays out of the initial bundle.
+      const { exportAllToPdf } = await import("./exportPdf.js");
       const n = await exportAllToPdf();
       setMsg(n === 0 ? "Nothing to export — no assignments yet." : `Exported ${n} assignment(s) to PDF.`);
     } catch (err) {
@@ -279,13 +280,15 @@ export default function App() {
           <section className="card">
             <div className="card-head">
               <h2 className="card-title">Assignments</h2>
-              <div className="mini-stats">
-                <span className="chip-count">{totalOpen} open</span>
-                <span className="chip-count muted">{totalDone} done</span>
+              <div className="card-head-actions">
+                <div className="mini-stats">
+                  <span className="chip-count">{totalOpen} open</span>
+                  <span className="chip-count muted">{totalDone} done</span>
+                </div>
+                <button className="btn-ghost" onClick={handleExport} disabled={exporting}>
+                  {exporting ? "Exporting…" : "Export PDF"}
+                </button>
               </div>
-              <button className="btn-ghost" onClick={handleExport} disabled={exporting}>
-                {exporting ? "Exporting…" : "Export PDF"}
-              </button>
             </div>
             {assignments.length === 0 && (
               <p className="muted small">No assignments yet.</p>
