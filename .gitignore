@@ -6,6 +6,8 @@ data.json.imported
 data.sqlite
 data.sqlite-shm
 data.sqlite-wal
+data/
+output/
 *.log
 .DS_Store
 PROJECT_IDEAS.md

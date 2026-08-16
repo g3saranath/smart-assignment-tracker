@@ -262,11 +262,11 @@ export default function App() {
                 <input name="dueDate" type="date" />
               </label>
               <label className="field">
-                <span className="field-label">Document (PDF, DOCX, TXT, MD)</span>
+                <span className="field-label">Document (PDF, image, DOCX, TXT, MD)</span>
                 <input
                   name="document"
                   type="file"
-                  accept=".pdf,.docx,.txt,.md"
+                  accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg,.webp"
                   className="file-input"
                   required
                 />
