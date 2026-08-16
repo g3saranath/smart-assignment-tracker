@@ -76,6 +76,7 @@ export default function App() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [loading, setLoading] = useState(false);
   const [solvingId, setSolvingId] = useState<string | null>(null);
+  const [exporting, setExporting] = useState(false);
   const [msg, setMsg] = useState<string>("");
   const [theme, setTheme] = useState<Theme>(() => {
     const saved = localStorage.getItem("theme") as Theme | null;
@@ -176,6 +177,21 @@ export default function App() {
     await refresh();
   }
 
+  async function handleExport() {
+    setExporting(true);
+    setMsg("Preparing PDF…");
+    try {
+      // Loaded on demand so jsPDF stays out of the initial bundle.
+      const { exportAllToPdf } = await import("./exportPdf.js");
+      const n = await exportAllToPdf();
+      setMsg(n === 0 ? "Nothing to export — no assignments yet." : `Exported ${n} assignment(s) to PDF.`);
+    } catch (err) {
+      setMsg((err as Error).message);
+    } finally {
+      setExporting(false);
+    }
+  }
+
   async function saveSettings(patch: { studentEmail?: string; notifyEnabled?: boolean }) {
     const { settings } = await api.saveSettings(patch);
     setSettings(settings);
@@ -264,9 +280,14 @@ export default function App() {
           <section className="card">
             <div className="card-head">
               <h2 className="card-title">Assignments</h2>
-              <div className="mini-stats">
-                <span className="chip-count">{totalOpen} open</span>
-                <span className="chip-count muted">{totalDone} done</span>
+              <div className="card-head-actions">
+                <div className="mini-stats">
+                  <span className="chip-count">{totalOpen} open</span>
+                  <span className="chip-count muted">{totalDone} done</span>
+                </div>
+                <button className="btn-ghost" onClick={handleExport} disabled={exporting}>
+                  {exporting ? "Exporting…" : "Export PDF"}
+                </button>
               </div>
             </div>
             {assignments.length === 0 && (
