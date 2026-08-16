@@ -513,6 +513,31 @@ button {
   letter-spacing: -0.02em;
 }
 
+.figure-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.figure-thumb {
+  display: block;
+  width: 128px;
+  height: 96px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md, 8px);
+  overflow: hidden;
+  background: var(--surface-2);
+}
+.figure-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.figure-thumb:hover {
+  border-color: var(--accent, #4a7);
+}
+
 .stat-row {
   display: grid;
   grid-template-columns: repeat(4, 1fr);

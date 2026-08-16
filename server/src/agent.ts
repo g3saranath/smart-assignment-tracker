@@ -14,10 +14,12 @@ import { readImageBytes } from "./assets.js";
 // (not import time) because ES module imports run before dotenv loads .env.
 const model = () => process.env.GEMINI_MODEL || "gemini-flash-latest";
 const maxRetries = () => Number(process.env.GEMINI_MAX_RETRIES || 3);
-// How many document figures to attach to a single Gemini call, and the per-image
-// byte ceiling. Keeps token cost and payload size bounded on figure-heavy docs.
+// How many document figures to attach to a single Gemini call, the per-image
+// byte ceiling, and the cumulative byte budget across all attached figures.
+// Keeps token cost and payload size bounded on figure-heavy docs.
 const maxImages = () => Number(process.env.GEMINI_MAX_IMAGES || 6);
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_TOTAL_IMAGE_BYTES = 16 * 1024 * 1024;
 
 function client(): GoogleGenAI {
   const apiKey = process.env.GEMINI_API_KEY;
@@ -44,6 +46,12 @@ function isRateLimit(err: unknown): boolean {
   return msg.includes("429") || /RESOURCE_EXHAUSTED|Too Many Requests/i.test(msg);
 }
 
+/** Transient server-side unavailability (503) that is usually worth retrying. */
+function isOverloaded(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes("503") || /UNAVAILABLE|overloaded|high demand/i.test(msg);
+}
+
 /** True when the quota is a hard zero — retrying will never help. */
 function isZeroQuota(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
@@ -62,7 +70,7 @@ async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
       return await fn();
     } catch (err) {
       lastErr = err;
-      if (!isRateLimit(err)) throw err;
+      if (!isRateLimit(err) && !isOverloaded(err)) throw err;
 
       if (isZeroQuota(err)) {
         throw new Error(
@@ -79,7 +87,7 @@ async function withRetry<T>(fn: () => Promise<T>, label: string): Promise<T> {
       const suggested = retryDelaySeconds(err);
       const waitMs = suggested != null ? suggested * 1000 + 500 : 2 ** attempt * 1000;
       console.warn(
-        `[gemini] rate-limited while ${label}; retry ${attempt + 1}/${retries} in ${Math.round(waitMs / 1000)}s`
+        `[gemini] ${isOverloaded(err) ? "overloaded" : "rate-limited"} while ${label}; retry ${attempt + 1}/${retries} in ${Math.round(waitMs / 1000)}s`
       );
       await sleep(waitMs);
     }
@@ -98,21 +106,27 @@ function stripFences(text: string): string {
 /**
  * Build a multimodal `contents` payload: the text prompt, a short manifest of
  * the attached figures (so the model can correlate them), then the figure
- * images themselves as inline data parts — in the same order as the manifest.
+ * images themselves as inline data parts, in the same order as the manifest.
  */
-function buildContents(prompt: string, images: AssignmentImage[]): Content[] {
+async function buildContents(
+  prompt: string,
+  images: AssignmentImage[]
+): Promise<Content[]> {
   const attached: Part[] = [];
   let manifest = "";
   let n = 0;
+  let totalBytes = 0;
 
   for (const img of images.slice(0, maxImages())) {
     let bytes: Buffer;
     try {
-      bytes = readImageBytes(img.file);
+      bytes = await readImageBytes(img.file);
     } catch {
-      continue; // asset missing on disk — skip rather than fail the call
+      continue; // asset missing on disk, skip rather than fail the call
     }
     if (bytes.length === 0 || bytes.length > MAX_IMAGE_BYTES) continue;
+    if (totalBytes + bytes.length > MAX_TOTAL_IMAGE_BYTES) break; // budget hit
+    totalBytes += bytes.length;
     n += 1;
     const where = img.page >= 0 ? ` (page ${img.page + 1})` : "";
     const cap = img.caption ? `: ${img.caption}` : "";
@@ -148,11 +162,12 @@ Assignment document:
 ${docMarkdown.slice(0, 30000)}
 """`;
 
+  const contents = await buildContents(prompt, images);
   const res = await withRetry(
     () =>
       ai.models.generateContent({
         model: model(),
-        contents: buildContents(prompt, images),
+        contents: contents,
       }),
     "extracting questions"
   );
@@ -195,7 +210,7 @@ ${docMarkdown.slice(0, 20000)}
 Question to solve:
 ${question}`;
 
-  const contents = buildContents(prompt, images);
+  const contents = await buildContents(prompt, images);
 
   // Preferred path: answer with Google Search grounding enabled.
   try {

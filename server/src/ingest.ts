@@ -53,7 +53,16 @@ export async function ingestDocument(
   // PDF without MinerU -> text layer only (no OCR, no figures).
   if (isPdf) {
     const data = await pdfParse(buffer);
-    return { markdown: textToMarkdown(data.text), images: [] };
+    const markdown = textToMarkdown(data.text);
+    // A scanned/image-only PDF has no text layer, so pdf-parse yields ~nothing.
+    // Fail loudly with guidance instead of silently creating an empty assignment.
+    if (markdown.replace(/\s/g, "").length < 10) {
+      throw new Error(
+        `"${filename}" has no extractable text (it looks scanned/image-only). ` +
+          `Configure MINERU_API_URL and run 'mineru-api' to OCR it.`
+      );
+    }
+    return { markdown, images: [] };
   }
 
   // An image without MinerU can't be read at all — fail with guidance.

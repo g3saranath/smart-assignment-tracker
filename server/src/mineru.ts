@@ -25,6 +25,11 @@ const apiUrl = () => (process.env.MINERU_API_URL || "").replace(/\/+$/, "");
 const backend = () => process.env.MINERU_BACKEND || "pipeline";
 const lang = () => (process.env.MINERU_LANG || "").trim();
 const timeoutMs = () => Number(process.env.MINERU_TIMEOUT_MS || 300_000);
+const maxRetries = () => Number(process.env.MINERU_MAX_RETRIES || 2);
+
+// Upper bound on figures kept when there's no content list to pick real
+// figures from, so a pathological doc can't attach hundreds of crops.
+const MAX_FALLBACK_IMAGES = 24;
 
 /** True when a MinerU service URL is configured. */
 export function isMineruConfigured(): boolean {
@@ -101,21 +106,31 @@ function collectImages(result: ParseResult): RawImage[] {
     if (out.length > 0) return out;
   }
 
-  // Fallback: no usable content list — attach everything MinerU returned.
+  // Fallback: no usable content list, attach everything MinerU returned
+  // (bounded, since this can include table/formula crops).
   return entries
+    .slice(0, MAX_FALLBACK_IMAGES)
     .map(([, dataUrl]) => pick(dataUrl, "", -1))
     .filter((x): x is RawImage => x !== null);
 }
 
-/** Parse a document through the MinerU service. Throws if it isn't configured. */
-export async function parseWithMineru(
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Errors worth retrying (network blips, service still starting, 5xx). */
+function transient(message: string): Error {
+  return Object.assign(new Error(message), { transient: true });
+}
+function isTransient(err: unknown): boolean {
+  return !!(err && typeof err === "object" && (err as { transient?: boolean }).transient);
+}
+
+/** One MinerU parse attempt. Tags retryable failures as `transient`. */
+async function parseOnce(
+  base: string,
   buffer: Buffer,
   filename: string,
   mimetype: string
 ): Promise<MineruResult> {
-  const base = apiUrl();
-  if (!base) throw new Error("MINERU_API_URL is not set.");
-
   const form = new FormData();
   // Copy into a fresh Uint8Array so the Blob is backed by a plain ArrayBuffer.
   form.append("files", new Blob([new Uint8Array(buffer)], { type: mimetype }), filename);
@@ -141,13 +156,15 @@ export async function parseWithMineru(
       signal: controller.signal,
     });
   } catch (err) {
+    // A timeout won't get better by retrying the same slow parse.
     if ((err as Error).name === "AbortError") {
       throw new Error(
         `MinerU timed out after ${Math.round(timeoutMs() / 1000)}s parsing "${filename}". ` +
-          `Large scans on the CPU 'pipeline' backend are slow — raise MINERU_TIMEOUT_MS or use a GPU.`
+          `Large scans on the CPU 'pipeline' backend are slow; raise MINERU_TIMEOUT_MS or use a GPU.`
       );
     }
-    throw new Error(
+    // Network-level failure (service starting, transient DNS/socket): retry.
+    throw transient(
       `Could not reach MinerU at ${base} (${(err as Error).message}). Is 'mineru-api' running?`
     );
   } finally {
@@ -156,7 +173,9 @@ export async function parseWithMineru(
 
   if (!res.ok) {
     const body = await res.text().catch(() => "");
-    throw new Error(`MinerU /file_parse failed (${res.status}): ${body.slice(0, 500)}`);
+    const msg = `MinerU /file_parse failed (${res.status}): ${body.slice(0, 500)}`;
+    // 5xx is usually transient; 4xx/409 (bad request / deterministic parse failure) is not.
+    throw res.status >= 500 ? transient(msg) : new Error(msg);
   }
 
   const json = (await res.json()) as { results?: Record<string, ParseResult> };
@@ -166,4 +185,31 @@ export async function parseWithMineru(
   }
 
   return { markdown: result.md_content, images: collectImages(result) };
+}
+
+/** Parse a document through the MinerU service, retrying transient failures. */
+export async function parseWithMineru(
+  buffer: Buffer,
+  filename: string,
+  mimetype: string
+): Promise<MineruResult> {
+  const base = apiUrl();
+  if (!base) throw new Error("MINERU_API_URL is not set.");
+
+  const retries = maxRetries();
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await parseOnce(base, buffer, filename, mimetype);
+    } catch (err) {
+      lastErr = err;
+      if (attempt >= retries || !isTransient(err)) throw err;
+      const waitMs = 2 ** attempt * 1000;
+      console.warn(
+        `[mineru] ${(err as Error).message}; retry ${attempt + 1}/${retries} in ${Math.round(waitMs / 1000)}s`
+      );
+      await sleep(waitMs);
+    }
+  }
+  throw lastErr;
 }

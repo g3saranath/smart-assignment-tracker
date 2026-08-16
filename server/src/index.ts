@@ -44,7 +44,7 @@ app.use(cors());
 app.use(express.json());
 // Serve extracted document figures read-only (for the UI / exported PDF).
 app.use("/api/assets", express.static(ASSETS_DIR));
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
 
 const wrap =
   (fn: (req: express.Request, res: express.Response) => Promise<void>) =>

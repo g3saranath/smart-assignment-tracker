@@ -11,10 +11,10 @@ import { dirname, join } from "node:path";
 import {
   existsSync,
   mkdirSync,
-  readFileSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { readFile } from "node:fs/promises";
 import type { AssignmentImage } from "./types.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -65,8 +65,8 @@ export function saveAssignmentImages(
 }
 
 /** Read the raw bytes for a stored image (throws if missing). */
-export function readImageBytes(file: string): Buffer {
-  return readFileSync(join(ASSETS_DIR, file));
+export function readImageBytes(file: string): Promise<Buffer> {
+  return readFile(join(ASSETS_DIR, file));
 }
 
 /** Remove all stored images for an assignment (best-effort). */
