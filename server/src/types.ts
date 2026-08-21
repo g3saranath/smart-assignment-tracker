@@ -3,6 +3,8 @@
 export interface Question {
   id: string;
   prompt: string;
+  context: string; // focused source excerpt relevant to this question
+  imageIds: string[]; // figures correlated with this question
   answer: string; // agent-generated or student-edited answer ("" if unsolved)
   sources: string[]; // web-search source URLs the agent used
   done: boolean;
@@ -16,6 +18,7 @@ export interface AssignmentImage {
   mimeType: string; // e.g. "image/jpeg", "image/png"
   caption: string; // MinerU-detected caption ("" if none)
   page: number; // 0-based source page index, -1 if unknown
+  sourcePath: string; // original path referenced by MinerU markdown
 }
 
 export interface Assignment {

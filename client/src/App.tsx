@@ -419,35 +419,6 @@ export default function App() {
 
               <ProgressBar p={selectedProgress} />
 
-              {selected.images.length > 0 && (
-                <>
-                  <h3 className="section-title">
-                    Figures ({selected.images.length})
-                  </h3>
-                  <div className="figure-strip">
-                    {selected.images.map((img) => (
-                      <a
-                        key={img.id}
-                        className="figure-thumb"
-                        href={`/api/assets/${img.file}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        title={
-                          img.caption ||
-                          (img.page >= 0 ? `Page ${img.page + 1}` : "Figure")
-                        }
-                      >
-                        <img
-                          src={`/api/assets/${img.file}`}
-                          alt={img.caption || "Figure"}
-                          loading="lazy"
-                        />
-                      </a>
-                    ))}
-                  </div>
-                </>
-              )}
-
               <h3 className="section-title">
                 Questions ({selectedProgress.completed}/{selectedProgress.total} completed)
               </h3>
@@ -472,6 +443,31 @@ export default function App() {
                       <div className="q-body">
                         <span className="q-index">Q{i + 1}</span>
                         <span className="q-prompt">{q.prompt}</span>
+                        {q.imageIds.length > 0 && (
+                          <div className="figure-strip">
+                            {selected.images
+                              .filter((img) => q.imageIds.includes(img.id))
+                              .map((img) => (
+                                <a
+                                  key={img.id}
+                                  className="figure-thumb"
+                                  href={`/api/assets/${img.file}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  title={
+                                    img.caption ||
+                                    (img.page >= 0 ? `Page ${img.page + 1}` : "Figure")
+                                  }
+                                >
+                                  <img
+                                    src={`/api/assets/${img.file}`}
+                                    alt={img.caption || "Figure for this question"}
+                                    loading="lazy"
+                                  />
+                                </a>
+                              ))}
+                          </div>
+                        )}
                       </div>
                     </div>
 

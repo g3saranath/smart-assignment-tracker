@@ -20,6 +20,7 @@ import type {
   Question,
   Settings,
 } from "./types.js";
+import { correlateQuestionContext } from "./questionContext.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DB_FILE = join(__dirname, "..", "data.sqlite");
@@ -82,18 +83,36 @@ interface AssignmentRow {
 }
 
 function rowToAssignment(row: AssignmentRow): Assignment {
-  let questions: Question[] = [];
+  let rawQuestions: Partial<Question>[] = [];
   try {
-    questions = JSON.parse(row.questions) as Question[];
+    rawQuestions = JSON.parse(row.questions) as Partial<Question>[];
   } catch {
-    questions = [];
+    rawQuestions = [];
   }
   let images: AssignmentImage[] = [];
   try {
-    images = JSON.parse(row.images ?? "[]") as AssignmentImage[];
+    images = (JSON.parse(row.images ?? "[]") as AssignmentImage[]).map((img) => ({
+      ...img,
+      sourcePath: img.sourcePath ?? "",
+    }));
   } catch {
     images = [];
   }
+  const questions = rawQuestions.map((question) => {
+    const correlated =
+      typeof question.context === "string"
+        ? null
+        : correlateQuestionContext(question.prompt ?? "", row.docMarkdown, images);
+    return {
+      id: question.id ?? "",
+      prompt: question.prompt ?? "",
+      context: question.context ?? correlated?.context ?? "",
+      imageIds: question.imageIds ?? correlated?.imageIds ?? [],
+      answer: question.answer ?? "",
+      sources: question.sources ?? [],
+      done: question.done ?? false,
+    };
+  });
   return {
     id: row.id,
     title: row.title,

@@ -288,7 +288,7 @@ opened before installing it. Install Node, then close and reopen the terminal.
 has no free-tier quota for the requested model. Create a new key using "Create API key
 in a new project" at https://aistudio.google.com/apikey, and set `GEMINI_MODEL` in
 `.env` to a model your key can access. Newer keys generally have access to
-`gemini-flash-latest`, which is the default. Older model names such as
+`gemini-3.5-flash-lite`, which is the default. Older model names such as
 `gemini-2.0-flash` or `gemini-2.5-flash` may be blocked for new keys. The app already
 retries automatically for ordinary rate limits.
 

@@ -30,6 +30,7 @@ import {
 } from "./store.js";
 import { ingestDocument } from "./ingest.js";
 import { extractQuestions, solveQuestion, newQuestion } from "./agent.js";
+import type { ExtractedQuestion } from "./agent.js";
 import { computeProgress } from "./progress.js";
 import { sendReminderNow, startScheduler } from "./notify.js";
 import {
@@ -75,9 +76,9 @@ app.post(
     );
     // Persist extracted figures to disk, then feed both text + figures to the agent.
     const savedImages = saveAssignmentImages(id, images);
-    let prompts: string[];
+    let extractedQuestions: ExtractedQuestion[];
     try {
-      prompts = await extractQuestions(markdown, savedImages);
+      extractedQuestions = await extractQuestions(markdown, savedImages);
     } catch (err) {
       // Extraction failed after images were written — don't leak the files.
       deleteAssignmentAssets(id);
@@ -90,7 +91,7 @@ app.post(
       dueDate: dueDate?.trim() || "",
       docMarkdown: markdown,
       images: savedImages,
-      questions: prompts.map((p) => newQuestion(randomUUID(), p)),
+      questions: extractedQuestions.map((question) => newQuestion(randomUUID(), question)),
       createdAt: new Date().toISOString(),
     };
     saveAssignment(assignment);
@@ -150,11 +151,8 @@ app.post(
       res.status(404).json({ error: "Question not found" });
       return;
     }
-    const { answer, sources, usedWebSearch } = await solveQuestion(
-      q.prompt,
-      a.docMarkdown,
-      a.images
-    );
+    const linkedImages = a.images.filter((image) => q.imageIds.includes(image.id));
+    const { answer, sources, usedWebSearch } = await solveQuestion(q, linkedImages);
     q.answer = answer;
     q.sources = sources;
     saveAssignment(a);
