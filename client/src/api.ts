@@ -3,6 +3,8 @@
 export interface Question {
   id: string;
   prompt: string;
+  context: string;
+  imageIds: string[];
   answer: string;
   sources: string[];
   done: boolean;
@@ -23,6 +25,7 @@ export interface AssignmentImage {
   mimeType: string;
   caption: string;
   page: number;
+  sourcePath: string;
 }
 
 export interface Assignment {

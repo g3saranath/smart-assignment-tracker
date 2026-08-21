@@ -4,15 +4,16 @@
 //   2. solveQuestion()   — answer one question using the document as context
 //      PLUS live Google Search grounding, returning the answer + source URLs.
 
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Type } from "@google/genai";
 import type { Content, Part } from "@google/genai";
 import type { AssignmentImage, Question } from "./types.js";
 import { readImageBytes } from "./assets.js";
+import { correlateQuestionContext, imageIdsInContext } from "./questionContext.js";
 
 // Model is configurable via .env so you can switch tiers/models without code
-// changes (e.g. GEMINI_MODEL=gemini-flash-latest). These are read at call time
+// changes (e.g. GEMINI_MODEL=gemini-3.5-flash-lite). These are read at call time
 // (not import time) because ES module imports run before dotenv loads .env.
-const model = () => process.env.GEMINI_MODEL || "gemini-flash-latest";
+const model = () => process.env.GEMINI_MODEL || "gemini-3.5-flash-lite";
 const maxRetries = () => Number(process.env.GEMINI_MAX_RETRIES || 3);
 // How many document figures to attach to a single Gemini call, the per-image
 // byte ceiling, and the cumulative byte budget across all attached figures.
@@ -130,7 +131,7 @@ async function buildContents(
     n += 1;
     const where = img.page >= 0 ? ` (page ${img.page + 1})` : "";
     const cap = img.caption ? `: ${img.caption}` : "";
-    manifest += `\n- Figure ${n}${where}${cap}`;
+    manifest += `\n- Figure ${n} [imageId: ${img.id}]${where}${cap}`;
     attached.push({
       inlineData: { mimeType: img.mimeType, data: bytes.toString("base64") },
     });
@@ -143,11 +144,17 @@ async function buildContents(
   return [{ role: "user", parts: [{ text }, ...attached] }];
 }
 
-/** Read the document and extract a list of question prompts. */
+export interface ExtractedQuestion {
+  prompt: string;
+  context: string;
+  imageIds: string[];
+}
+
+/** Read the document and extract questions with their local source context. */
 export async function extractQuestions(
   docMarkdown: string,
   images: AssignmentImage[] = []
-): Promise<string[]> {
+): Promise<ExtractedQuestion[]> {
   const ai = client();
   const prompt = `You are helping a student break an assignment into its individual questions.
 
@@ -155,7 +162,15 @@ Below is the assignment document (in markdown). Extract every distinct question,
 problem, or task the student is asked to complete. Keep each question's full text.
 If figures are attached, include any questions shown only inside those images.
 
-Return ONLY a JSON array of strings, one per question. No markdown fences, no commentary.
+Return ONLY a JSON array of objects with this exact shape:
+[{"prompt":"the complete question","context":"the verbatim relevant source section","imageIds":["linked imageId"]}]
+
+The context must contain only the text needed to answer that question, copied verbatim
+from the document. Preserve any markdown image references in that relevant section so
+the question can be linked to its figure. imageIds must contain only IDs from the attached
+figure manifest that are directly relevant to this question; use [] when no figure is needed.
+Do not include unrelated document sections or figures.
+No markdown fences or commentary around the JSON.
 
 Assignment document:
 """
@@ -168,16 +183,82 @@ ${docMarkdown.slice(0, 30000)}
       ai.models.generateContent({
         model: model(),
         contents: contents,
+        config: {
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              required: ["prompt", "context", "imageIds"],
+              properties: {
+                prompt: { type: Type.STRING },
+                context: { type: Type.STRING },
+                imageIds: {
+                  type: Type.ARRAY,
+                  items: { type: Type.STRING },
+                },
+              },
+            },
+          },
+        },
       }),
     "extracting questions"
   );
 
   const text = stripFences(res.text ?? "[]");
   try {
-    const arr = JSON.parse(text) as string[];
-    return Array.isArray(arr) ? arr.filter((q) => typeof q === "string") : [];
+    const arr = JSON.parse(text) as unknown[];
+    if (!Array.isArray(arr)) return [];
+    return arr.flatMap((item) => {
+      if (typeof item === "string") {
+        const correlated = correlateQuestionContext(item, docMarkdown, images);
+        return [{ prompt: item, ...correlated }];
+      }
+      if (!item || typeof item !== "object") return [];
+      const value = item as {
+        prompt?: unknown;
+        context?: unknown;
+        imageIds?: unknown;
+      };
+      if (typeof value.prompt !== "string") return [];
+      const fallback = correlateQuestionContext(value.prompt, docMarkdown, images);
+      let context =
+        typeof value.context === "string" && value.context.trim()
+          ? value.context.trim().slice(0, 8000)
+          : fallback.context;
+      const validImageIds = new Set(images.map((image) => image.id));
+      const explicitImageIds = Array.isArray(value.imageIds)
+        ? value.imageIds.filter(
+            (id): id is string => typeof id === "string" && validImageIds.has(id)
+          )
+        : null;
+      let imageIds = explicitImageIds ?? imageIdsInContext(context, docMarkdown, images);
+      if (explicitImageIds === null && imageIds.length === 0 && fallback.imageIds.length > 0) {
+        context = fallback.context;
+        imageIds = fallback.imageIds;
+      }
+      return [{
+        prompt: value.prompt,
+        context,
+        imageIds,
+      }];
+    });
   } catch {
-    return [];
+    // Some models occasionally leave LaTeX backslashes unescaped despite JSON
+    // mode. Recover the prompts, then derive context deterministically.
+    const prompts = [...text.matchAll(/"prompt"\s*:\s*"((?:\\.|[^"\\])*)"/g)]
+      .map((match) => {
+        try {
+          return JSON.parse(`"${match[1]}"`) as string;
+        } catch {
+          return "";
+        }
+      })
+      .filter(Boolean);
+    return prompts.map((prompt) => ({
+      prompt,
+      ...correlateQuestionContext(prompt, docMarkdown, images),
+    }));
   }
 }
 
@@ -189,26 +270,25 @@ export interface SolveResult {
 
 /** Solve one question using the doc as context, with optional web search. */
 export async function solveQuestion(
-  question: string,
-  docMarkdown: string,
+  question: Question,
   images: AssignmentImage[] = []
 ): Promise<SolveResult> {
   const ai = client();
 
   const prompt = `You are a study assistant helping a student understand and solve an assignment question.
-Use the assignment document below as primary context. If figures from the document
-are attached as images, read them as part of the context — they may contain the
+Use the relevant source excerpt below as primary context. If figures from the document
+are attached as images, read them as part of the context; they are specifically linked to the
 diagram, chart, or data the question refers to. When helpful, use web search to find
 accurate, up-to-date supporting information. Explain the answer clearly so the student
 learns. Show reasoning and steps, not just a final answer.
 
-Assignment document (context):
+Relevant source excerpt:
 """
-${docMarkdown.slice(0, 20000)}
+${question.context.slice(0, 8000)}
 """
 
 Question to solve:
-${question}`;
+${question.prompt}`;
 
   const contents = await buildContents(prompt, images);
 
@@ -266,6 +346,6 @@ function readSolveResult(
 }
 
 /** Build a fresh Question object from a prompt string. */
-export function newQuestion(id: string, prompt: string): Question {
-  return { id, prompt, answer: "", sources: [], done: false };
+export function newQuestion(id: string, extracted: ExtractedQuestion): Question {
+  return { id, ...extracted, answer: "", sources: [], done: false };
 }

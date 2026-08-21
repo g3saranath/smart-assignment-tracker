@@ -89,10 +89,15 @@ function collectImages(result: ParseResult): RawImage[] {
     (b) => b.type === "image" && typeof b.img_path === "string"
   );
 
-  const pick = (dataUrl: string, caption: string, page: number): RawImage | null => {
+  const pick = (
+    dataUrl: string,
+    caption: string,
+    page: number,
+    sourcePath: string
+  ): RawImage | null => {
     const decoded = decodeDataUrl(dataUrl);
     if (!decoded) return null;
-    return { data: decoded.data, mimeType: decoded.mimeType, caption, page };
+    return { data: decoded.data, mimeType: decoded.mimeType, caption, page, sourcePath };
   };
 
   if (figureBlocks.length > 0) {
@@ -100,7 +105,7 @@ function collectImages(result: ParseResult): RawImage[] {
     for (const b of figureBlocks) {
       const dataUrl = imageMap[basename(b.img_path!)];
       if (!dataUrl) continue;
-      const img = pick(dataUrl, toText(b.image_caption), b.page_idx ?? -1);
+      const img = pick(dataUrl, toText(b.image_caption), b.page_idx ?? -1, b.img_path!);
       if (img) out.push(img);
     }
     if (out.length > 0) return out;
@@ -110,7 +115,7 @@ function collectImages(result: ParseResult): RawImage[] {
   // (bounded, since this can include table/formula crops).
   return entries
     .slice(0, MAX_FALLBACK_IMAGES)
-    .map(([, dataUrl]) => pick(dataUrl, "", -1))
+    .map(([path, dataUrl]) => pick(dataUrl, "", -1, path))
     .filter((x): x is RawImage => x !== null);
 }
 

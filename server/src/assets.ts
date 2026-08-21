@@ -26,6 +26,7 @@ export interface RawImage {
   mimeType: string;
   caption: string;
   page: number;
+  sourcePath: string;
 }
 
 const EXT_BY_MIME: Record<string, string> = {
@@ -60,6 +61,7 @@ export function saveAssignmentImages(
       mimeType: img.mimeType,
       caption: img.caption,
       page: img.page,
+      sourcePath: img.sourcePath,
     };
   });
 }
