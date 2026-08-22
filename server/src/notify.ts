@@ -116,6 +116,52 @@ export async function sendReminderNow(): Promise<{ sent: boolean; count: number 
   return { sent: true, count };
 }
 
+/** Email one or more PDF exports to one or more recipients as attachments. */
+export async function sendPdfByEmail(input: {
+  to: string[];
+  files: { filename: string; pdf: Buffer }[];
+}): Promise<{ sent: boolean; to: string[]; count: number }> {
+  if (input.to.length === 0) {
+    throw new Error("No recipient email address given.");
+  }
+  if (input.files.length === 0) {
+    throw new Error("No PDF files received.");
+  }
+  const transport = makeTransport();
+  // Verify up front so bad SMTP config fails with a clear message.
+  try {
+    await transport.verify();
+  } catch (err) {
+    throw new Error(
+      `Could not connect to the email server. Check SMTP_HOST, SMTP_PORT, and your ` +
+        `credentials in .env. For Gmail, SMTP_PASS must be a Google App Password. ` +
+        `Details: ${(err as Error).message}`
+    );
+  }
+  const names = input.files.map((f) => f.filename).join(", ");
+  await transport.sendMail({
+    from: process.env.SMTP_FROM || process.env.SMTP_USER,
+    to: input.to.join(", "),
+    subject:
+      input.files.length === 1
+        ? "Your Smart Assignment Tracker PDF export"
+        : `Your Smart Assignment Tracker export (${input.files.length} PDFs)`,
+    text: `Attached: ${names}`,
+    html:
+      `<p>Attached from <b>Smart Assignment Tracker</b>:</p>` +
+      `<ul>${input.files
+        .map((f) => `<li>${f.filename}</li>`)
+        .join("")}</ul>` +
+      `<p style="color:#666;">Generated ${new Date().toLocaleString()}</p>`,
+    attachments: input.files.map((f) => ({
+      filename: f.filename,
+      content: f.pdf,
+      contentType: "application/pdf",
+    })),
+  });
+  return { sent: true, to: input.to, count: input.files.length };
+}
+
 /**
  * Start a periodic scheduler. Every `intervalMs` it checks whether notifications
  * are enabled and, if enough time has passed, emails the student.

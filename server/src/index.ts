@@ -7,6 +7,8 @@
 //   PATCH  /api/assignments/:id/questions/:qid        -> update answer/done
 //   GET    /api/settings   PUT /api/settings
 //   POST   /api/notify/test -> send reminder email now
+//   POST   /api/export/email -> email client-generated PDFs to one/more addresses
+//   GET/POST/DELETE /api/contacts -> saved recipients (name + email)
 //   GET    /api/assets/*    -> static extracted figures
 
 import { config as loadEnv } from "dotenv";
@@ -27,12 +29,15 @@ import {
   deleteAssignment,
   getSettings,
   saveSettings,
+  getContacts,
+  addContact,
+  deleteContact,
 } from "./store.js";
 import { ingestDocument } from "./ingest.js";
 import { extractQuestions, solveQuestion, newQuestion } from "./agent.js";
 import type { ExtractedQuestion } from "./agent.js";
 import { computeProgress } from "./progress.js";
-import { sendReminderNow, startScheduler } from "./notify.js";
+import { sendReminderNow, sendPdfByEmail, startScheduler } from "./notify.js";
 import {
   ASSETS_DIR,
   deleteAssignmentAssets,
@@ -215,6 +220,76 @@ app.post(
   wrap(async (_req, res) => {
     const result = await sendReminderNow();
     res.json(result);
+  })
+);
+
+// Email PDF exports to one or more recipients. The PDFs are built client-side
+// with jsPDF (one per selected assignment) and uploaded as multipart form data:
+//   pdf     -> repeated file field, one per assignment
+//   emails  -> comma-separated recipient addresses
+app.post(
+  "/api/export/email",
+  upload.array("pdf", 25),
+  wrap(async (req, res) => {
+    const files = Array.isArray(req.files) ? req.files : [];
+    const recipients = String(req.body?.emails || "")
+      .split(",")
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean);
+    const invalid = recipients.filter(
+      (e) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)
+    );
+    if (invalid.length > 0) {
+      res.status(400).json({ error: `Invalid email address: ${invalid.join(", ")}` });
+      return;
+    }
+    if (recipients.length === 0) {
+      res.status(400).json({ error: "Enter at least one email address." });
+      return;
+    }
+    if (files.length === 0 || files.some((f) => f.size === 0)) {
+      res.status(400).json({ error: "No PDF received." });
+      return;
+    }
+    const result = await sendPdfByEmail({
+      to: [...new Set(recipients)],
+      files: files.map((f) => ({
+        filename: f.originalname || "assignments.pdf",
+        pdf: f.buffer,
+      })),
+    });
+    res.json(result);
+  })
+);
+
+// --- Contacts (saved email recipients) --------------------------------------
+
+app.get(
+  "/api/contacts",
+  wrap(async (_req, res) => {
+    res.json({ contacts: getContacts() });
+  })
+);
+
+app.post(
+  "/api/contacts",
+  wrap(async (req, res) => {
+    const { name, email } = req.body as { name?: string; email?: string };
+    const cleanEmail = (email || "").trim();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      res.status(400).json({ error: "Enter a valid email address." });
+      return;
+    }
+    const contact = addContact(name || "", cleanEmail);
+    res.json({ contact });
+  })
+);
+
+app.delete(
+  "/api/contacts/:id",
+  wrap(async (req, res) => {
+    deleteContact(req.params.id);
+    res.json({ ok: true });
   })
 );
 

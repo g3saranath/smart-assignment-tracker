@@ -6,6 +6,7 @@ import {
   type Assignment,
   type Progress,
   type Settings,
+  type Contact,
 } from "./api.js";
 
 type Theme = "light" | "dark";
@@ -77,6 +78,13 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [solvingId, setSolvingId] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [emailingPdf, setEmailingPdf] = useState(false);
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [pickedIds, setPickedIds] = useState<Set<string>>(new Set());
+  const [pickedContactIds, setPickedContactIds] = useState<Set<string>>(new Set());
+  const [manualEmails, setManualEmails] = useState("");
+  const [newContactName, setNewContactName] = useState("");
+  const [newContactEmail, setNewContactEmail] = useState("");
   const [msg, setMsg] = useState<string>("");
   const [theme, setTheme] = useState<Theme>(() => {
     const saved = localStorage.getItem("theme") as Theme | null;
@@ -99,6 +107,7 @@ export default function App() {
   useEffect(() => {
     refresh().catch((e) => setMsg(e.message));
     api.getSettings().then((r) => setSettings(r.settings)).catch(() => {});
+    api.getContacts().then((r) => setContacts(r.contacts)).catch(() => {});
   }, []);
 
   async function openAssignment(id: string) {
@@ -189,6 +198,103 @@ export default function App() {
       setMsg((err as Error).message);
     } finally {
       setExporting(false);
+    }
+  }
+
+  function togglePick(id: string) {
+    setPickedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  const allPicked =
+    assignments.length > 0 && assignments.every((a) => pickedIds.has(a.id));
+
+  function togglePickAll() {
+    setPickedIds(allPicked ? new Set() : new Set(assignments.map((a) => a.id)));
+  }
+
+  function toggleContactPick(id: string) {
+    setPickedContactIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  async function handleAddContact(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    try {
+      const { contact } = await api.addContact(newContactName, newContactEmail);
+      const r = await api.getContacts();
+      setContacts(r.contacts);
+      setPickedContactIds((prev) => new Set(prev).add(contact.id));
+      setNewContactName("");
+      setNewContactEmail("");
+      setMsg(`Saved "${contact.name || contact.email}" to contacts.`);
+    } catch (err) {
+      setMsg((err as Error).message);
+    }
+  }
+
+  async function removeContact(id: string) {
+    await api.deleteContact(id);
+    setContacts((prev) => prev.filter((c) => c.id !== id));
+    setPickedContactIds((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+  }
+
+  async function handleEmailExport() {
+    const ids = assignments.filter((a) => pickedIds.has(a.id)).map((a) => a.id);
+    if (ids.length === 0) {
+      setMsg("Select at least one assignment to email.");
+      return;
+    }
+    const manual = manualEmails
+      .split(",")
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+    const recipients = [
+      ...new Set([
+        ...manual,
+        ...contacts
+          .filter((c) => pickedContactIds.has(c.id))
+          .map((c) => c.email),
+      ]),
+    ];
+    if (recipients.length === 0) {
+      setMsg("Choose a saved contact or type an email address to send to.");
+      return;
+    }
+    setEmailingPdf(true);
+    setMsg("Building PDFs…");
+    try {
+      // Loaded on demand so jsPDF stays out of the initial bundle.
+      const { buildPdfsForAssignments } = await import("./exportPdf.js");
+      const pdfs = await buildPdfsForAssignments(ids);
+      if (pdfs.length === 0) {
+        setMsg("Nothing to export — the selected assignments are gone.");
+        return;
+      }
+      setMsg(`Sending ${pdfs.length} PDF(s) to ${recipients.length} recipient(s)…`);
+      const form = new FormData();
+      form.append("emails", recipients.join(","));
+      for (const p of pdfs) form.append("pdf", p.blob, p.filename);
+      await api.emailExportPdf(form);
+      setMsg(
+        `Emailed ${pdfs.length} PDF(s) to ${recipients.join(", ")}. Check Spam if nothing arrives.`
+      );
+    } catch (err) {
+      setMsg((err as Error).message);
+    } finally {
+      setEmailingPdf(false);
     }
   }
 
@@ -331,6 +437,103 @@ export default function App() {
               ))}
             </div>
           </section>
+
+          {assignments.length > 0 && (
+            <section className="card stack">
+              <h2 className="card-title">Email PDF</h2>
+              <p className="muted small">
+                Pick assignments — each becomes its own PDF, all attached to a
+                single email.
+              </p>
+
+              <div className="pick-list">
+                <label className="pick-row pick-all">
+                  <input type="checkbox" checked={allPicked} onChange={togglePickAll} />
+                  <span>Select all</span>
+                </label>
+                {assignments.map((a) => (
+                  <label key={a.id} className={`pick-row ${pickedIds.has(a.id) ? "picked" : ""}`}>
+                    <input
+                      type="checkbox"
+                      checked={pickedIds.has(a.id)}
+                      onChange={() => togglePick(a.id)}
+                    />
+                    <span className="ellipsis pick-title">{a.title}</span>
+                    <small className="muted">
+                      {a.progress.completed}/{a.progress.total} done
+                    </small>
+                  </label>
+                ))}
+              </div>
+
+              <h3 className="sub-title">Send to</h3>
+
+              {contacts.length > 0 && (
+                <div className="pick-list contact-list">
+                  {contacts.map((c) => (
+                    <div key={c.id} className="contact-row">
+                      <label className="pick-row grow">
+                        <input
+                          type="checkbox"
+                          checked={pickedContactIds.has(c.id)}
+                          onChange={() => toggleContactPick(c.id)}
+                        />
+                        <span className="ellipsis">{c.name || c.email}</span>
+                        {c.name && <small className="muted ellipsis">{c.email}</small>}
+                      </label>
+                      <span
+                        className="link-danger"
+                        role="button"
+                        onClick={() => removeContact(c.id)}
+                      >
+                        Remove
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <form onSubmit={handleAddContact} className="contact-add">
+                <input
+                  placeholder="Name"
+                  value={newContactName}
+                  onChange={(e) => setNewContactName(e.target.value)}
+                />
+                <input
+                  type="email"
+                  placeholder="name@example.com"
+                  value={newContactEmail}
+                  onChange={(e) => setNewContactEmail(e.target.value)}
+                  required
+                />
+                <button type="submit" className="btn-ghost">
+                  Save contact
+                </button>
+              </form>
+
+              <label className="field">
+                <span className="field-label">Or type addresses (comma separated)</span>
+                <input
+                  value={manualEmails}
+                  onChange={(e) => setManualEmails(e.target.value)}
+                  placeholder="alice@school.edu, bob@school.edu"
+                />
+              </label>
+
+              <button
+                className="btn-primary"
+                onClick={handleEmailExport}
+                disabled={emailingPdf}
+              >
+                {emailingPdf
+                  ? "Sending…"
+                  : `Email ${pickedIds.size} PDF(s) to ${
+                      pickedContactIds.size +
+                      manualEmails.split(",").filter((s) => s.trim()).length
+                    } recipient(s)`}
+              </button>
+            </section>
+          )}
 
           {settings && (
             <section className="card">
