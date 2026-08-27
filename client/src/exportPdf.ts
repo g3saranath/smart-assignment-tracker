@@ -99,8 +99,10 @@ function renderPdf(items: LoadedItem[]): jsPDF {
   doc.setTextColor(0);
 
   for (const { assignment: a, progress: p } of items) {
+    y = newPageIfNeeded(26);
+    // A single-assignment export has its title in the header already, so the
+    // separator rule would just sit under it looking stray.
     if (items.length > 1) {
-      y = newPageIfNeeded(26);
       doc.setDrawColor(220);
       doc.line(MARGIN, y - 3, PAGE_W - MARGIN, y - 3);
     }
@@ -194,7 +196,10 @@ export async function exportAllToPdf(): Promise<number> {
 
 /**
  * Build one separate PDF per selected assignment (ready to attach to an email).
- * Filenames come from each assignment title, e.g. `physics-hw-5-2026-08-22.pdf`.
+ * Filenames come from each assignment title, e.g. `physics-hw-5-1a2b3c4d-2026-08-22.pdf`.
+ * The id fragment keeps two same-titled assignments apart: mail clients drop or
+ * overwrite duplicate attachment names, and `clean()` collapses every non-Latin
+ * title to the same slug.
  */
 export async function buildPdfsForAssignments(
   ids: string[]
@@ -204,6 +209,6 @@ export async function buildPdfsForAssignments(
   const date = new Date().toISOString().slice(0, 10);
   return items.map(({ assignment, progress }) => ({
     blob: renderPdf([{ assignment, progress }]).output("blob"),
-    filename: `${slugify(assignment.title)}-${date}.pdf`,
+    filename: `${slugify(assignment.title)}-${assignment.id.slice(0, 8)}-${date}.pdf`,
   }));
 }

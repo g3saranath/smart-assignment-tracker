@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Markdown from "./Markdown.js";
 import {
   api,
@@ -10,6 +10,10 @@ import {
 } from "./api.js";
 
 type Theme = "light" | "dark";
+
+// Mirrors MAX_EMAIL_PDFS on the server, so an oversized selection is caught
+// here with a useful message rather than as a multipart rejection.
+const MAX_EMAIL_PDFS = 25;
 
 function statusClass(status: Progress["status"]): string {
   switch (status) {
@@ -226,6 +230,27 @@ export default function App() {
     });
   }
 
+  const manualList = useMemo(
+    () =>
+      manualEmails
+        .split(",")
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean),
+    [manualEmails]
+  );
+
+  // Single source of truth for who gets the email, so the button label can
+  // never promise a different count than the send actually uses.
+  const recipients = useMemo(
+    () => [
+      ...new Set([
+        ...manualList,
+        ...contacts.filter((c) => pickedContactIds.has(c.id)).map((c) => c.email),
+      ]),
+    ],
+    [manualList, contacts, pickedContactIds]
+  );
+
   async function handleAddContact(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     try {
@@ -242,13 +267,17 @@ export default function App() {
   }
 
   async function removeContact(id: string) {
-    await api.deleteContact(id);
-    setContacts((prev) => prev.filter((c) => c.id !== id));
-    setPickedContactIds((prev) => {
-      const next = new Set(prev);
-      next.delete(id);
-      return next;
-    });
+    try {
+      await api.deleteContact(id);
+      setContacts((prev) => prev.filter((c) => c.id !== id));
+      setPickedContactIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    } catch (err) {
+      setMsg((err as Error).message);
+    }
   }
 
   async function handleEmailExport() {
@@ -257,18 +286,10 @@ export default function App() {
       setMsg("Select at least one assignment to email.");
       return;
     }
-    const manual = manualEmails
-      .split(",")
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean);
-    const recipients = [
-      ...new Set([
-        ...manual,
-        ...contacts
-          .filter((c) => pickedContactIds.has(c.id))
-          .map((c) => c.email),
-      ]),
-    ];
+    if (ids.length > MAX_EMAIL_PDFS) {
+      setMsg(`Select at most ${MAX_EMAIL_PDFS} assignments per email.`);
+      return;
+    }
     if (recipients.length === 0) {
       setMsg("Choose a saved contact or type an email address to send to.");
       return;
@@ -276,6 +297,21 @@ export default function App() {
     setEmailingPdf(true);
     setMsg("Building PDFs…");
     try {
+      // Typed addresses are saved as contacts first. The server only mails to
+      // known contacts, so that it cannot be used to send to arbitrary people.
+      if (manualList.length > 0) {
+        const added = await Promise.all(
+          manualList.map((email) => api.addContact("", email))
+        );
+        const r = await api.getContacts();
+        setContacts(r.contacts);
+        setPickedContactIds((prev) => {
+          const next = new Set(prev);
+          for (const { contact } of added) next.add(contact.id);
+          return next;
+        });
+        setManualEmails("");
+      }
       // Loaded on demand so jsPDF stays out of the initial bundle.
       const { buildPdfsForAssignments } = await import("./exportPdf.js");
       const pdfs = await buildPdfsForAssignments(ids);
@@ -472,7 +508,7 @@ export default function App() {
                 <div className="pick-list contact-list">
                   {contacts.map((c) => (
                     <div key={c.id} className="contact-row">
-                      <label className="pick-row grow">
+                      <label className="pick-row">
                         <input
                           type="checkbox"
                           checked={pickedContactIds.has(c.id)}
@@ -512,7 +548,9 @@ export default function App() {
               </form>
 
               <label className="field">
-                <span className="field-label">Or type addresses (comma separated)</span>
+                <span className="field-label">
+                  Or type addresses (comma separated, saved to contacts on send)
+                </span>
                 <input
                   value={manualEmails}
                   onChange={(e) => setManualEmails(e.target.value)}
@@ -527,10 +565,7 @@ export default function App() {
               >
                 {emailingPdf
                   ? "Sending…"
-                  : `Email ${pickedIds.size} PDF(s) to ${
-                      pickedContactIds.size +
-                      manualEmails.split(",").filter((s) => s.trim()).length
-                    } recipient(s)`}
+                  : `Email ${pickedIds.size} PDF(s) to ${recipients.length} recipient(s)`}
               </button>
             </section>
           )}

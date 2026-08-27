@@ -116,6 +116,28 @@ export async function sendReminderNow(): Promise<{ sent: boolean; count: number 
   return { sent: true, count };
 }
 
+/** Escape text that is interpolated into an outgoing HTML email body. */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
+ * Reduce an uploaded filename to something safe to show and to attach. Drops
+ * any directory part, keeps only plain filename characters, and guarantees the
+ * .pdf suffix. The name arrives from the client, so none of it can be trusted.
+ */
+function safeFilename(name: string): string {
+  const base = (name.split(/[\\/]/).pop() || "").replace(/[^\w.\- ]+/g, "_").slice(0, 120);
+  const trimmed = base.replace(/^[.\s]+/, "").trim();
+  if (!trimmed) return "assignment.pdf";
+  return /\.pdf$/i.test(trimmed) ? trimmed : `${trimmed}.pdf`;
+}
+
 /** Email one or more PDF exports to one or more recipients as attachments. */
 export async function sendPdfByEmail(input: {
   to: string[];
@@ -138,28 +160,29 @@ export async function sendPdfByEmail(input: {
         `Details: ${(err as Error).message}`
     );
   }
-  const names = input.files.map((f) => f.filename).join(", ");
+  const files = input.files.map((f) => ({ ...f, filename: safeFilename(f.filename) }));
+  const names = files.map((f) => f.filename).join(", ");
   await transport.sendMail({
     from: process.env.SMTP_FROM || process.env.SMTP_USER,
     to: input.to.join(", "),
     subject:
-      input.files.length === 1
+      files.length === 1
         ? "Your Smart Assignment Tracker PDF export"
-        : `Your Smart Assignment Tracker export (${input.files.length} PDFs)`,
+        : `Your Smart Assignment Tracker export (${files.length} PDFs)`,
     text: `Attached: ${names}`,
     html:
       `<p>Attached from <b>Smart Assignment Tracker</b>:</p>` +
-      `<ul>${input.files
-        .map((f) => `<li>${f.filename}</li>`)
+      `<ul>${files
+        .map((f) => `<li>${escapeHtml(f.filename)}</li>`)
         .join("")}</ul>` +
       `<p style="color:#666;">Generated ${new Date().toLocaleString()}</p>`,
-    attachments: input.files.map((f) => ({
+    attachments: files.map((f) => ({
       filename: f.filename,
       content: f.pdf,
       contentType: "application/pdf",
     })),
   });
-  return { sent: true, to: input.to, count: input.files.length };
+  return { sent: true, to: input.to, count: files.length };
 }
 
 /**
