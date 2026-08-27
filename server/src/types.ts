@@ -38,6 +38,15 @@ export interface Settings {
   lastNotifiedAt: string; // ISO timestamp, "" if never
 }
 
+// A saved email recipient: a person's name plus their address. Emails are
+// unique (case-insensitive); adding an existing address updates its name.
+export interface Contact {
+  id: string;
+  name: string;
+  email: string; // stored lowercase
+  createdAt: string;
+}
+
 export interface DB {
   assignments: Assignment[];
   settings: Settings;

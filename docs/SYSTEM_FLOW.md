@@ -376,6 +376,45 @@ The current export does not include extracted figure images. Markdown and LaTeX 
 written as source text, and unsupported non-Latin-1 characters are removed because the
 built-in jsPDF Helvetica font is used.
 
+## Email PDF export
+
+The same renderer also produces one PDF per selected assignment, which the browser
+uploads to the server to be mailed out as attachments:
+
+1. Pick assignments and recipients in the Email PDF card. At most 25 assignments per
+   send, matching the server limit.
+2. Any address typed into the free-text field is saved as a contact first.
+3. `buildPdfsForAssignments` renders one PDF per assignment, named
+   `<title-slug>-<id-prefix>-YYYY-MM-DD.pdf`. The id prefix keeps same-titled
+   assignments from colliding, since mail clients discard duplicate attachment names.
+4. The PDFs are posted to `POST /api/export/email` as multipart `pdf` fields with a
+   comma-separated `emails` field.
+5. The server validates and mails them through the configured SMTP account.
+
+jsPDF is loaded with a dynamic import, so it stays out of the initial bundle and is
+only fetched when an export actually runs.
+
+### Server-side checks
+
+Because this endpoint sends mail using the operator's SMTP credentials, it validates
+on several fronts:
+
+| Check | Behavior |
+|---|---|
+| Recipient format | Rejects anything failing a basic address pattern, which also keeps CR/LF out of SMTP headers |
+| Recipient identity | Every address must be a saved contact or the configured student email, otherwise `403` |
+| Attachment count | At most 25 files per request |
+| Attachment size | At most 10 MB each, against the 50 MB used for document ingestion |
+| Attachment type | Declared mime type must be `application/pdf`, and the bytes must start with `%PDF-` |
+| Filename | Directory parts stripped, restricted to plain filename characters, `.pdf` enforced, and HTML-escaped before going into the email body |
+
+The recipient identity check is what stops the endpoint being an open mail relay. It is
+backed by an origin check on every mutating request: browsers always send `Origin` on
+non-GET requests, so a request carrying an origin outside `ALLOWED_ORIGINS` is rejected
+with `403`. This matters because a plain HTML form can post multipart data cross-site
+without a preflight, so CORS configuration alone would not prevent the request from
+being delivered.
+
 ## Email notifications
 
 SMTP credentials come from `.env`. Gmail requires an App Password rather than the
@@ -423,6 +462,10 @@ hour, and it does not keep the Node process alive by itself.
 | `GET` | `/api/settings` | Load notification settings |
 | `PUT` | `/api/settings` | Save notification settings |
 | `POST` | `/api/notify/test` | Send a reminder immediately |
+| `POST` | `/api/export/email` | Mail browser-generated PDFs to saved contacts |
+| `GET` | `/api/contacts` | List saved email recipients |
+| `POST` | `/api/contacts` | Add a recipient, or rename an existing one by email |
+| `DELETE` | `/api/contacts/:id` | Remove a saved recipient |
 | `GET` | `/api/assets/*` | Serve extracted figures |
 | `GET` | `/api/health` | Report server and Gemini-key readiness |
 
@@ -436,12 +479,18 @@ hour, and it does not keep the Node process alive by itself.
 - Gemini retries `429` and `503`; hard zero quota fails immediately.
 - Scheduler errors are logged and do not terminate the server.
 - Legacy JSON migration failures leave the original file intact.
+- Upload rejections raised by multipart parsing, such as an oversized or unexpected
+  file, are converted to JSON `400` responses rather than Express's default HTML page,
+  which the client cannot parse.
 
 ## Important boundaries
 
 - This is currently a single-user local application with no authentication or tenant
   isolation.
-- CORS is unrestricted.
+- CORS is limited to `ALLOWED_ORIGINS`, and mutating requests from any other browser
+  origin are rejected. Requests with no `Origin` header, such as curl or another
+  server, are still allowed through, so this is a cross-site defense rather than
+  authentication.
 - Extracted assets are served from a public API path.
 - The Express server does not serve the production `client/dist` directory; production
   deployment needs a static host or reverse proxy for the client.

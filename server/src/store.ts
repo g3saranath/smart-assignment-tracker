@@ -10,12 +10,14 @@
 //   nobody loses data when upgrading.
 
 import Database from "better-sqlite3";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import type {
   Assignment,
   AssignmentImage,
+  Contact,
   DB,
   Question,
   Settings,
@@ -51,6 +53,13 @@ db.exec(`
     studentEmail  TEXT NOT NULL,
     notifyEnabled INTEGER NOT NULL,
     lastNotifiedAt TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS contacts (
+    id        TEXT PRIMARY KEY,
+    name      TEXT NOT NULL,
+    email     TEXT NOT NULL UNIQUE, -- stored lowercase
+    createdAt TEXT NOT NULL
   );
 `);
 
@@ -236,6 +245,52 @@ export function saveSettings(settings: Settings): void {
 
 export function getDB(): DB {
   return { assignments: getAssignments(), settings: getSettings() };
+}
+
+// ---- Contacts (saved email recipients) -------------------------------------
+
+interface ContactRow {
+  id: string;
+  name: string;
+  email: string;
+  createdAt: string;
+}
+
+export function getContacts(): Contact[] {
+  const rows = db
+    .prepare("SELECT * FROM contacts ORDER BY createdAt ASC")
+    .all() as ContactRow[];
+  return rows.map((r) => ({ ...r }));
+}
+
+/** Add a contact, or update the name if the email already exists. */
+export function addContact(name: string, email: string): Contact {
+  const cleanEmail = email.trim().toLowerCase();
+  const existing = db
+    .prepare("SELECT * FROM contacts WHERE email = ?")
+    .get(cleanEmail) as ContactRow | undefined;
+  if (existing) {
+    const nextName = name.trim() || existing.name;
+    db.prepare("UPDATE contacts SET name = ? WHERE id = ?").run(
+      nextName,
+      existing.id
+    );
+    return { id: existing.id, name: nextName, email: cleanEmail, createdAt: existing.createdAt };
+  }
+  const contact: Contact = {
+    id: randomUUID(),
+    name: name.trim(),
+    email: cleanEmail,
+    createdAt: new Date().toISOString(),
+  };
+  db.prepare(
+    "INSERT INTO contacts (id, name, email, createdAt) VALUES (@id, @name, @email, @createdAt)"
+  ).run(contact);
+  return contact;
+}
+
+export function deleteContact(id: string): void {
+  db.prepare("DELETE FROM contacts WHERE id = ?").run(id);
 }
 
 // Run migration after the API is defined (it uses saveSettings).

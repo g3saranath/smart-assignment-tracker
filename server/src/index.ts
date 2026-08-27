@@ -7,6 +7,8 @@
 //   PATCH  /api/assignments/:id/questions/:qid        -> update answer/done
 //   GET    /api/settings   PUT /api/settings
 //   POST   /api/notify/test -> send reminder email now
+//   POST   /api/export/email -> email client-generated PDFs to one/more addresses
+//   GET/POST/DELETE /api/contacts -> saved recipients (name + email)
 //   GET    /api/assets/*    -> static extracted figures
 
 import { config as loadEnv } from "dotenv";
@@ -27,12 +29,15 @@ import {
   deleteAssignment,
   getSettings,
   saveSettings,
+  getContacts,
+  addContact,
+  deleteContact,
 } from "./store.js";
 import { ingestDocument } from "./ingest.js";
 import { extractQuestions, solveQuestion, newQuestion } from "./agent.js";
 import type { ExtractedQuestion } from "./agent.js";
 import { computeProgress } from "./progress.js";
-import { sendReminderNow, startScheduler } from "./notify.js";
+import { sendReminderNow, sendPdfByEmail, startScheduler } from "./notify.js";
 import {
   ASSETS_DIR,
   deleteAssignmentAssets,
@@ -40,12 +45,79 @@ import {
 } from "./assets.js";
 import type { Assignment } from "./types.js";
 
+const PORT = Number(process.env.PORT || 3001);
+
+// Origins allowed to make browser requests. The Vite dev server proxies /api,
+// so in normal use requests are same origin and this list only needs the dev
+// client. Override with ALLOWED_ORIGINS (comma separated) when hosting elsewhere.
+const ALLOWED_ORIGINS = (
+  process.env.ALLOWED_ORIGINS ||
+  `http://localhost:4173,http://127.0.0.1:4173,http://localhost:${PORT},http://127.0.0.1:${PORT}`
+)
+  .split(",")
+  .map((o) => o.trim())
+  .filter(Boolean);
+
 const app = express();
-app.use(cors());
+app.use(cors({ origin: ALLOWED_ORIGINS }));
+
+// CORS alone does not stop cross site requests: a plain HTML form can POST
+// multipart data to this server without a preflight, and the browser sends it
+// even though the attacker cannot read the reply. That is enough to abuse
+// endpoints that send mail. Browsers always attach Origin to non-GET requests,
+// so reject mutating requests carrying an unknown one. Requests with no Origin
+// (curl, tests, other servers) are left alone.
+app.use((req, res, next) => {
+  if (req.method === "GET" || req.method === "HEAD" || req.method === "OPTIONS") {
+    next();
+    return;
+  }
+  const origin = req.get("origin");
+  if (origin && !ALLOWED_ORIGINS.includes(origin)) {
+    res.status(403).json({
+      error: `Blocked a cross-site request from ${origin}. Add it to ALLOWED_ORIGINS in .env if this was intentional.`,
+    });
+    return;
+  }
+  next();
+});
+
 app.use(express.json());
 // Serve extracted document figures read-only (for the UI / exported PDF).
 app.use("/api/assets", express.static(ASSETS_DIR));
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 50 * 1024 * 1024 } });
+const MAX_DOC_BYTES = 50 * 1024 * 1024;
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_DOC_BYTES } });
+
+// Errors thrown from middleware carry a status so the handler below can turn
+// them into a clean JSON reply instead of a generic 500.
+class HttpError extends Error {
+  constructor(
+    message: string,
+    readonly status = 400
+  ) {
+    super(message);
+  }
+}
+
+// Email attachments get much tighter limits than document ingestion: these are
+// small generated PDFs, and memoryStorage means every byte is buffered in RAM.
+const MAX_EMAIL_PDFS = 25;const MAX_PDF_BYTES = 10 * 1024 * 1024;
+const pdfUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: MAX_PDF_BYTES, files: MAX_EMAIL_PDFS },
+  fileFilter: (_req, file, cb) => {
+    // Advisory only, since the client sets this. Contents are verified below.
+    if (file.mimetype !== "application/pdf") {
+      cb(new HttpError(`Only PDF attachments are allowed, got "${file.mimetype}".`));
+      return;
+    }
+    cb(null, true);
+  },
+});
+
+// Deliberately loose: enough to reject header-injection attempts and obvious
+// typos. Note that \s excludes CR/LF, which keeps them out of the SMTP headers.
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 const wrap =
   (fn: (req: express.Request, res: express.Response) => Promise<void>) =>
@@ -218,11 +290,127 @@ app.post(
   })
 );
 
+// Email PDF exports to one or more recipients. The PDFs are built client-side
+// with jsPDF (one per selected assignment) and uploaded as multipart form data:
+//   pdf     -> repeated file field, one per assignment
+//   emails  -> comma-separated recipient addresses
+//
+// Every recipient must already be a saved contact (or the configured student
+// address). Without that check this endpoint is an open mail relay: it would
+// send caller-supplied attachments to caller-supplied addresses using the
+// operator's SMTP credentials.
+app.post(
+  "/api/export/email",
+  pdfUpload.array("pdf", MAX_EMAIL_PDFS),
+  wrap(async (req, res) => {
+    const files = Array.isArray(req.files) ? req.files : [];
+    const recipients = String(req.body?.emails || "")
+      .split(",")
+      .map((e) => e.trim().toLowerCase())
+      .filter(Boolean);
+    const invalid = recipients.filter((e) => !EMAIL_RE.test(e));
+    if (invalid.length > 0) {
+      res.status(400).json({ error: `Invalid email address: ${invalid.join(", ")}` });
+      return;
+    }
+    if (recipients.length === 0) {
+      res.status(400).json({ error: "Enter at least one email address." });
+      return;
+    }
+    const allowed = new Set(getContacts().map((c) => c.email));
+    const studentEmail = getSettings().studentEmail.trim().toLowerCase();
+    if (studentEmail) allowed.add(studentEmail);
+    const unknown = recipients.filter((e) => !allowed.has(e));
+    if (unknown.length > 0) {
+      res.status(403).json({
+        error: `Not a saved contact: ${unknown.join(", ")}. Save the address under contacts first.`,
+      });
+      return;
+    }
+    if (files.length === 0 || files.some((f) => f.size === 0)) {
+      res.status(400).json({ error: "No PDF received." });
+      return;
+    }
+    // The multipart mime type is caller-controlled, so confirm the bytes really
+    // are a PDF before mailing them out as one.
+    if (!files.every((f) => f.buffer.subarray(0, 5).toString("latin1") === "%PDF-")) {
+      res.status(400).json({ error: "Only PDF attachments are allowed." });
+      return;
+    }
+    const result = await sendPdfByEmail({
+      to: [...new Set(recipients)],
+      files: files.map((f) => ({
+        filename: f.originalname || "assignments.pdf",
+        pdf: f.buffer,
+      })),
+    });
+    res.json(result);
+  })
+);
+
+// --- Contacts (saved email recipients) --------------------------------------
+
+app.get(
+  "/api/contacts",
+  wrap(async (_req, res) => {
+    res.json({ contacts: getContacts() });
+  })
+);
+
+app.post(
+  "/api/contacts",
+  wrap(async (req, res) => {
+    const { name, email } = req.body as { name?: string; email?: string };
+    const cleanEmail = (email || "").trim();
+    if (!EMAIL_RE.test(cleanEmail)) {
+      res.status(400).json({ error: "Enter a valid email address." });
+      return;
+    }
+    const contact = addContact(name || "", cleanEmail);
+    res.json({ contact });
+  })
+);
+
+app.delete(
+  "/api/contacts/:id",
+  wrap(async (req, res) => {
+    deleteContact(req.params.id);
+    res.json({ ok: true });
+  })
+);
+
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, geminiConfigured: !!process.env.GEMINI_API_KEY });
 });
 
-const PORT = Number(process.env.PORT || 3001);
+// Errors raised by middleware (multer, mainly) never reach `wrap`, so without
+// this they fall through to Express's default handler and come back as an HTML
+// page. The client only parses JSON, so it would show a bare status text.
+const handleErrors: express.ErrorRequestHandler = (err, _req, res, next) => {
+  if (res.headersSent) {
+    next(err);
+    return;
+  }
+  if (err instanceof multer.MulterError) {
+    // Both upload instances funnel through here, so report whichever cap applies.
+    const maxMb = (err.field === "pdf" ? MAX_PDF_BYTES : MAX_DOC_BYTES) / 1024 / 1024;
+    const limits: Record<string, string> = {
+      LIMIT_FILE_SIZE: `Each file must be under ${maxMb} MB.`,
+      LIMIT_FILE_COUNT: `Attach at most ${MAX_EMAIL_PDFS} files at a time.`,
+      LIMIT_UNEXPECTED_FILE: `Attach at most ${MAX_EMAIL_PDFS} files at a time.`,
+    };
+    res.status(400).json({ error: limits[err.code] || err.message });
+    return;
+  }
+  if (err instanceof HttpError) {
+    res.status(err.status).json({ error: err.message });
+    return;
+  }
+  console.error(err);
+  res.status(500).json({ error: (err as Error).message || "Unexpected server error." });
+};
+app.use(handleErrors);
+
 app.listen(PORT, () => {
   console.log(`✅ Server running on http://localhost:${PORT}`);
   startScheduler();

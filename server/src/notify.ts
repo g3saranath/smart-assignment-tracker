@@ -116,6 +116,75 @@ export async function sendReminderNow(): Promise<{ sent: boolean; count: number 
   return { sent: true, count };
 }
 
+/** Escape text that is interpolated into an outgoing HTML email body. */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
+ * Reduce an uploaded filename to something safe to show and to attach. Drops
+ * any directory part, keeps only plain filename characters, and guarantees the
+ * .pdf suffix. The name arrives from the client, so none of it can be trusted.
+ */
+function safeFilename(name: string): string {
+  const base = (name.split(/[\\/]/).pop() || "").replace(/[^\w.\- ]+/g, "_").slice(0, 120);
+  const trimmed = base.replace(/^[.\s]+/, "").trim();
+  if (!trimmed) return "assignment.pdf";
+  return /\.pdf$/i.test(trimmed) ? trimmed : `${trimmed}.pdf`;
+}
+
+/** Email one or more PDF exports to one or more recipients as attachments. */
+export async function sendPdfByEmail(input: {
+  to: string[];
+  files: { filename: string; pdf: Buffer }[];
+}): Promise<{ sent: boolean; to: string[]; count: number }> {
+  if (input.to.length === 0) {
+    throw new Error("No recipient email address given.");
+  }
+  if (input.files.length === 0) {
+    throw new Error("No PDF files received.");
+  }
+  const transport = makeTransport();
+  // Verify up front so bad SMTP config fails with a clear message.
+  try {
+    await transport.verify();
+  } catch (err) {
+    throw new Error(
+      `Could not connect to the email server. Check SMTP_HOST, SMTP_PORT, and your ` +
+        `credentials in .env. For Gmail, SMTP_PASS must be a Google App Password. ` +
+        `Details: ${(err as Error).message}`
+    );
+  }
+  const files = input.files.map((f) => ({ ...f, filename: safeFilename(f.filename) }));
+  const names = files.map((f) => f.filename).join(", ");
+  await transport.sendMail({
+    from: process.env.SMTP_FROM || process.env.SMTP_USER,
+    to: input.to.join(", "),
+    subject:
+      files.length === 1
+        ? "Your Smart Assignment Tracker PDF export"
+        : `Your Smart Assignment Tracker export (${files.length} PDFs)`,
+    text: `Attached: ${names}`,
+    html:
+      `<p>Attached from <b>Smart Assignment Tracker</b>:</p>` +
+      `<ul>${files
+        .map((f) => `<li>${escapeHtml(f.filename)}</li>`)
+        .join("")}</ul>` +
+      `<p style="color:#666;">Generated ${new Date().toLocaleString()}</p>`,
+    attachments: files.map((f) => ({
+      filename: f.filename,
+      content: f.pdf,
+      contentType: "application/pdf",
+    })),
+  });
+  return { sent: true, to: input.to, count: files.length };
+}
+
 /**
  * Start a periodic scheduler. Every `intervalMs` it checks whether notifications
  * are enabled and, if enough time has passed, emails the student.

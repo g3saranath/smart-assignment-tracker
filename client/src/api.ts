@@ -54,6 +54,13 @@ export interface Settings {
   lastNotifiedAt: string;
 }
 
+export interface Contact {
+  id: string;
+  name: string;
+  email: string;
+  createdAt: string;
+}
+
 async function json<T>(resPromise: Promise<Response>): Promise<T> {
   const res = await resPromise;
   if (!res.ok) {
@@ -113,4 +120,23 @@ export const api = {
     json<{ sent: boolean; count: number }>(
       fetch("/api/notify/test", { method: "POST" })
     ),
+
+  emailExportPdf: (form: FormData) =>
+    json<{ sent: boolean; to: string[]; count: number }>(
+      fetch("/api/export/email", { method: "POST", body: form })
+    ),
+
+  getContacts: () => json<{ contacts: Contact[] }>(fetch("/api/contacts")),
+
+  addContact: (name: string, email: string) =>
+    json<{ contact: Contact }>(
+      fetch("/api/contacts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name, email }),
+      })
+    ),
+
+  deleteContact: (id: string) =>
+    json<{ ok: boolean }>(fetch(`/api/contacts/${id}`, { method: "DELETE" })),
 };

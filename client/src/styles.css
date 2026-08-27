@@ -294,6 +294,64 @@ button {
   cursor: default;
 }
 
+/* Email-a-PDF card: assignment picker, contacts, recipients */
+.pick-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pick-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 8px;
+  border-radius: var(--r-sm);
+  font-size: 14px;
+  cursor: pointer;
+  min-width: 0;
+}
+.pick-row:hover {
+  background: var(--surface-2);
+}
+.pick-row input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+.pick-all {
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  margin-bottom: 4px;
+}
+.picked {
+  background: var(--surface-2);
+}
+.pick-title {
+  flex: 1;
+}
+.sub-title {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  margin: 4px 0 8px;
+}
+.contact-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.contact-row .pick-row {
+  flex: 1;
+  min-width: 0;
+}
+.contact-add {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr auto;
+  gap: 8px;
+}
+
 /* Switch toggle */
 .switch-row {
   display: flex;
